@@ -19,9 +19,9 @@
 │  (Scrapers)  │     │  (AI Engine)  │     │  (Storage)   │     │  (Publisher) │
 └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
        │                    │                    │                    │
-  TodoCanada          Claude API           SQLite DB         海外新生活 API
+  TodoCanada          Kimi API             SQLite DB         海外新生活 API
   FamilyFunCanada     翻译/摘要/分类                          POST activity/release
-  DiscoverSaskatoon
+  DiscoverSaskatoon   (Anthropic 兼容协议)
   (Playwright + REST API)
 ```
 
@@ -29,7 +29,7 @@
 
 1. **抓取**: 定时从 TodoCanada、FamilyFunCanada、DiscoverSaskatoon 抓取各城市未来 30 天的活动
 2. **AI 处理**: 对每个活动进行翻译（英→中）、摘要生成、分类
-3. **去重**: 基于标题相似度 + 时间 + 地点进行去重，避免重复发布
+3. **去重**: 基于 source+source_id 精确去重 + 标题/时间/地址 hash 内容去重（一期），AI 相似度去重（二期）
 4. **存储**: 保存处理后的活动到本地数据库，记录来源和发布状态
 5. **发布**: 调用海外新生活 `activity/release/` API 发布活动
 6. **审核**: 平台内置审核系统（`perform_sync_moderation`）自动审核
@@ -39,7 +39,7 @@
 | 组件 | 技术选择 | 说明 |
 |------|---------|------|
 | 语言 | Python 3.12+ | AI/爬虫生态最成熟 |
-| AI 引擎 | Claude API (Anthropic) | 翻译、摘要、分类 |
+| AI 引擎 | Kimi kimi-k2.6 (月之暗面) | 翻译、摘要、分类 |
 | 数据源 | TodoCanada + FamilyFunCanada + DiscoverSaskatoon (一期) | Playwright 爬取 + WordPress REST API |
 | HTTP 客户端 | httpx + Playwright | 异步 HTTP + 浏览器渲染 |
 | 数据库 | SQLite → PostgreSQL | 轻量起步，后续可迁移 |
@@ -51,7 +51,7 @@
 
 | 阶段 | 内容 | 文档 |
 |------|------|------|
-| 一期 | TodoCanada + FamilyFunCanada + DiscoverSaskatoon 抓取 + AI 翻译 + API 发布 | [02-eventbrite-scraper.md](./02-eventbrite-scraper.md) |
+| 一期 | TodoCanada + FamilyFunCanada + DiscoverSaskatoon 抓取 + AI 翻译 + API 发布 | [02-scraper-design.md](./02-scraper-design.md) |
 | 二期 | Facebook Events 和其他数据源扩展 | 后续文档 |
 | 三期 | 智能去重 + 质量评分 | 后续文档 |
 

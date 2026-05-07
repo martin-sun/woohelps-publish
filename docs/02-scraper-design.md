@@ -81,6 +81,8 @@ TODOCANADA_CITY_SLUGS = {
 
 ### 爬虫实现
 
+> **⚠️ 选择器未验证**: 以下代码中的 CSS 选择器为推测性选择器，实现前必须按 Spike 验证清单确认实际页面结构。
+
 ```python
 class TodoCanadaScraper(BaseScraper):
     """TodoCanada 活动爬虫 — Playwright"""
@@ -125,8 +127,8 @@ class TodoCanadaScraper(BaseScraper):
                     title_en=title.strip(),
                     description_en=desc,
                     html_en=detail.get("html", ""),
-                    start_time=detail.get("start_time", start_date),
-                    end_time=detail.get("end_time", end_date),
+                    start_time_local=detail.get("start_time", start_date),
+                    end_time_local=detail.get("end_time", end_date),
                     address=address,
                     latitude=detail.get("latitude"),
                     longitude=detail.get("longitude"),
@@ -273,8 +275,8 @@ class FamilyFunCanadaScraper(BaseScraper):
             title_en=event.get("title", ""),
             description_en=self._strip_html(event.get("description", "")),
             html_en=event.get("description", ""),
-            start_time=self._parse_datetime(event.get("start_date_details", {})),
-            end_time=self._parse_datetime(event.get("end_date_details", {})),
+            start_time_local=self._parse_datetime(event.get("start_date_details", {})),
+            end_time_local=self._parse_datetime(event.get("end_date_details", {})),
             address=self._format_address(venue),
             latitude=float(venue.get("latitude", 0)) or None,
             longitude=float(venue.get("longitude", 0)) or None,
@@ -321,6 +323,8 @@ class FamilyFunCanadaScraper(BaseScraper):
 - 图片
 
 ### 爬虫实现
+
+> **⚠️ 选择器未验证**: 以下代码中的 CSS 选择器为推测性选择器，实现前必须按 Spike 验证清单确认实际页面结构。
 
 ```python
 class DiscoverSaskatoonScraper(BaseScraper):
@@ -397,8 +401,11 @@ class RawActivity:
     source_url: str = ""
     description_en: str = ""
     html_en: str = ""
-    start_time: datetime = None
-    end_time: datetime = None
+    start_time_local: datetime = None   # 城市本地时间（naive datetime）
+    end_time_local: datetime = None     # 城市本地时间（naive datetime）
+    timezone: str = ""                  # IANA 时区（如 America/Toronto）
+    start_time_utc: datetime = None     # UTC 时间（由转换函数填充）
+    end_time_utc: datetime = None       # UTC 时间（由转换函数填充）
     address: str = ""
     latitude: float | None = None
     longitude: float | None = None
@@ -462,6 +469,57 @@ async def fetch_all_activities(
     return all_activities
 ```
 
+## 抓取后处理：时间 enrich
+
+爬虫只填充 `start_time_local` / `end_time_local` / `timezone`。必须在抓取完成后、写入数据库前，统一调用 `local_to_utc` 填充 UTC 字段，否则后续去重（依赖 `start_time_utc`）会因字段为空而报错。
+
+```python
+from zoneinfo import ZoneInfo
+from datetime import datetime, timezone as tz
+
+CITY_TIMEZONES = {
+    "toronto":    "America/Toronto",
+    "vancouver":  "America/Vancouver",
+    "montreal":   "America/Toronto",
+    "calgary":    "America/Edmonton",
+    "edmonton":   "America/Edmonton",
+    "ottawa":     "America/Toronto",
+    "winnipeg":   "America/Winnipeg",
+    "saskatoon":  "America/Regina",
+    "regina":     "America/Regina",
+    "moncton":    "America/Moncton",
+}
+
+def enrich_time_fields(activity: RawActivity) -> None:
+    """抓取后立即调用：填充 timezone 和 start_time_utc / end_time_utc。"""
+    tz_name = CITY_TIMEZONES.get(activity.city_slug)
+    if not tz_name:
+        logger.warning(f"Unknown timezone for city: {activity.city_slug}")
+        return
+    activity.timezone = tz_name
+    zone = ZoneInfo(tz_name)
+    for local_attr, utc_attr in [
+        ("start_time_local", "start_time_utc"),
+        ("end_time_local", "end_time_utc"),
+    ]:
+        local_dt = getattr(activity, local_attr)
+        if local_dt:
+            aware = local_dt.replace(tzinfo=zone)
+            utc_dt = aware.astimezone(tz.utc).replace(tzinfo=None)
+            setattr(activity, utc_attr, utc_dt)
+
+async def fetch_all_activities(
+    city_slug: str, start_date: datetime, end_date: datetime
+) -> list[RawActivity]:
+    all_activities = []
+    for name, scraper_cls in SCRAPERS.items():
+        # ... 抓取逻辑同上 ...
+        for act in activities:
+            enrich_time_fields(act)   # ← 立即填充 UTC 字段
+            all_activities.append(act)
+    return all_activities
+```
+
 ## 图片处理
 
 一期先用原始 URL，平台 `img` 字段支持外部 URL。后续可上传到腾讯云 COS。
@@ -473,3 +531,42 @@ async def fetch_all_activities(
 - **城市**: 遍历所有 10 个城市
 - **并行**: 不同城市的抓取可并行执行
 - **去重**: 通过数据库 `UNIQUE(source, source_id)` 约束避免重复处理
+
+---
+
+## 实现前 Spike 验证清单
+
+> **警告**: 上方代码中的 CSS 选择器（如 `article, .event-item, .listing-item`、`.event-card, .views-row, .card`）均为推测性选择器，**尚未在真实页面上验证**。在正式实现爬虫前，必须对每个数据源完成以下 spike 验证。
+
+### 每个数据源必须完成的验证
+
+| 检查项 | 说明 | 通过标准 |
+|--------|------|---------|
+| 页面采样 | 手动访问 3-5 个城市的列表页和详情页，确认页面结构 | 页面可正常访问，结构一致 |
+| 选择器验证 | 用浏览器 DevTools 确认实际 CSS 选择器 | 选择器能准确定位所有活动条目 |
+| robots.txt | 检查 `/{source}/robots.txt` | 确认爬取行为合规或确认对非登录用户无限制 |
+| 反爬机制 | 测试连续请求 5-10 次，检查是否被封 IP 或出现验证码 | 无反爬限制，或可通过合理延迟绕过 |
+| 数据完整性 | 确认能获取到：标题、时间、地址、描述、图片 | 至少 80% 的活动能提取完整信息 |
+| 时间格式 | 确认列表页/详情页的时间格式和时区 | 能准确解析为本地 naive datetime |
+
+### 各源 Spike 优先级
+
+1. **FamilyFunCanada** — 优先级最高，REST API 返回结构化 JSON，无需猜测选择器，最稳定可靠
+2. **DiscoverSaskatoon** — 仅覆盖 Saskatoon，页面结构相对简单，但需验证 "Load More" 和详情页选择器
+3. **TodoCanada** — 最复杂，多城市页面结构可能有差异，需逐城市采样
+
+### 反爬策略
+
+```python
+# 通用反爬对策（Playwright 爬虫）
+PLAYWRIGHT_CONFIG = {
+    "headless": True,
+    "request_delay": (2, 5),       # 每次请求间隔 2-5 秒（随机）
+    "page_timeout": 30000,          # 页面加载超时 30s
+    "user_agent_rotation": True,    # 随机 User-Agent
+    "max_retries": 3,               # 失败重试次数
+    "retry_delay": 10,              # 重试间隔
+}
+```
+
+如果 spike 发现某数据源反爬严重或页面结构频繁变化，应降低该源优先级或改用其他数据源替代。

@@ -84,18 +84,16 @@ class WoohelpsPublisher:
             "description": activity.description_zh,
             "html": activity.html_zh,
             "city_id": activity.city_id,
-            "start_time": activity.start_time.strftime("%Y-%m-%d %H:%M"),
-            "end_time": activity.end_time.strftime("%Y-%m-%d %H:%M"),
+            "start_time": activity.start_time_utc.strftime("%Y-%m-%d %H:%M"),
+            "end_time": activity.end_time_utc.strftime("%Y-%m-%d %H:%M"),
             "address": activity.address,
             "img": activity.image_url or "",
             "imgs": json.dumps(activity.image_urls),
-            "fee_type": 1 if activity.is_free else 2,
-            "fee": activity.price or 0,
+            "fee_type": 1 if activity.fee_parsed_free else 2,
+            "fee": activity.fee_amount,  # 已解析的 float，解析失败为 0
             "enroll_type": 1,     # 不需要报名
             "remind_type": 1,     # 不提醒
             "groupon_type": 1,    # 非团购
-            "period": 1,          # 一次性
-            "type": activity.activity_type,
         }
         headers = {"LOGIN_SESSION": self.login_session}
         response = await self.client.post(
@@ -106,7 +104,50 @@ class WoohelpsPublisher:
         return response.json()
 ```
 
-## 错误处理
+### 字段说明：`type` 和 `period`
+
+后端 `release_activity` **不会**从请求中读取 `type` 和 `period` 字段（参考 `reference/overseas-new-life/overseas_api/src/apps/content/views/activity.py:464-509`）。所有已发布活动的类型默认为 `1`（一般活动），周期默认为一次性。AI 分类结果仅存储在本地数据库用于后续分析，不影响发布。
+
+如需在发布时指定活动类型，需要先修改后端 `release_activity` 接口增加对 `type` 字段的读取。
+
+### 字段说明：`fee` 价格解析
+
+后端 `release_activity` 对 `fee` 执行 `float(request.POST.get("fee", 0))`，非数字字符串会导致 500 错误。但爬虫拿到的 `price` 是原始字符串（如 `"Free"`、`"$10-$20"`、`"$5"`），必须预先解析：
+
+```python
+import re
+
+def parse_fee_amount(price: str | None) -> tuple[float, bool]:
+    """解析价格字符串，返回 (金额, 是否免费)。
+
+    - "Free" / "" / None → (0.0, True)
+    - "$5" → (5.0, False)
+    - "$10-$20" → (10.0, False)  取最低价
+    - 解析失败 → (0.0, False)，原始价格应追加到 description/html
+    """
+    if not price:
+        return 0.0, True
+    price = price.strip()
+    if price.lower() in ("free", "free!"):
+        return 0.0, True
+    # 匹配金额数字
+    numbers = re.findall(r"\$(\d+(?:\.\d+)?)", price)
+    if numbers:
+        return float(numbers[0]), False
+    # 兜底：尝试提取任意数字
+    numbers = re.findall(r"(\d+(?:\.\d+)?)", price)
+    if numbers:
+        return float(numbers[0]), False
+    # 无法解析 → 传 0，原始价格由调用方追加到描述中
+    return 0.0, False
+```
+
+**`is_free` 来源规则**: 发布时的 `fee_type` 和 `fee` 必须统一从 `parse_fee_amount` 的结果派生，而不是使用爬虫原始的 `is_free` 字段。原因：爬虫对 `is_free` 的判断逻辑各不相同（有的看 `"Free"` 文本，有的看 `cost` 字段是否为空），可能与价格解析结果矛盾。处理流程：
+
+1. 爬虫写入 `price` 原始字符串和初步 `is_free`
+2. 存储阶段调用 `parse_fee_amount(price)` → 得到 `(fee_amount, fee_parsed_free)`
+3. 将 `fee_amount` 和 `fee_parsed_free` 写入数据库，覆盖爬虫的 `is_free`
+4. 发布时使用 `fee_parsed_free` 决定 `fee_type`，使用 `fee_amount` 作为 `fee`
 
 | 错误码 | 含义 | 处理策略 |
 |--------|------|---------|
@@ -156,3 +197,54 @@ CITIES = {
 ```
 
 `woohelps_city_id` 在运行时自动从 API 获取并缓存。
+
+## 时区转换
+
+平台 API 要求 UTC 时间（后端按 UTC 解析）。爬虫抓取的活动时间是城市本地时间，必须在发布前转换为 UTC。
+
+### 城市 IANA 时区映射
+
+```python
+from zoneinfo import ZoneInfo
+
+CITY_TIMEZONES = {
+    "toronto":    ZoneInfo("America/Toronto"),      # UTC-5 (EST) / UTC-4 (EDT)
+    "vancouver":  ZoneInfo("America/Vancouver"),    # UTC-8 (PST) / UTC-7 (PDT)
+    "montreal":   ZoneInfo("America/Toronto"),      # 同 Toronto
+    "calgary":    ZoneInfo("America/Edmonton"),     # UTC-7 (MST) / UTC-6 (MDT)
+    "edmonton":   ZoneInfo("America/Edmonton"),     # 同 Calgary
+    "ottawa":     ZoneInfo("America/Toronto"),      # 同 Toronto
+    "winnipeg":   ZoneInfo("America/Winnipeg"),     # UTC-6 (CST) / UTC-5 (CDT)
+    "saskatoon":  ZoneInfo("America/Regina"),       # UTC-6 (CST, 不使用夏令时)
+    "regina":     ZoneInfo("America/Regina"),       # 同 Saskatoon
+    "moncton":    ZoneInfo("America/Moncton"),      # UTC-4 (AST) / UTC-3 (ADT)
+}
+```
+
+### 转换逻辑
+
+所有爬虫抓取的本地时间（naive datetime）必须在存入数据库前标注时区并转换为 UTC：
+
+```python
+from datetime import datetime, timezone
+
+def local_to_utc(local_dt: datetime, city_slug: str) -> datetime:
+    """将城市本地时间转为 UTC naive datetime（供平台 API 使用）。
+
+    输入: naive datetime（无时区信息，代表城市当地时间）
+    输出: naive datetime（UTC，用于 strftime 后传给平台 API）
+    """
+    tz = CITY_TIMEZONES[city_slug]
+    # 标注为本地时区
+    aware = local_dt.replace(tzinfo=tz)
+    # 转为 UTC 并剥离时区信息
+    utc_dt = aware.astimezone(timezone.utc).replace(tzinfo=None)
+    return utc_dt
+```
+
+### 注意事项
+
+- **夏令时**: `zoneinfo` 自动处理 DST 切换，无需手动判断
+- **Saskatoon/Regina**: 使用 `America/Regina` 时区，该地区不使用夏令时
+- **爬虫侧**: 爬虫应存储原始本地时间（`start_time_local`），在 AI 处理或发布前统一转换
+- **数据库**: 存储两列 — `start_time`（UTC）用于去重和排序，`start_time_local` 用于本地显示和调试
