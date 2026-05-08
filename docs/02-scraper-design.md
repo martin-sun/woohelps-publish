@@ -111,10 +111,23 @@ class BaseScraper(ABC):
 **网址**: `https://www.todocanada.ca/`
 **特点**: 按城市列出活动，有详情页
 
+### Spike 验证结果 (2026-05-07)
+
+| 检查项 | 结果 | 说明 |
+|--------|------|------|
+| 列表页 URL | ✅ `/city/{city}/events/` | 注意：不是 `/{city}/events/` |
+| 详情页 URL | ✅ `/city/{city}/event/{slug}/` | 如 `/city/toronto/event/juliet/` |
+| 分页 | ✅ WordPress 标准分页 | `/city/{city}/events/page/{n}/`，Toronto 26 页 |
+| JSON-LD | ✅ Event schema | 含 name/startDate/endDate/location |
+| 反爬 | ⚠️ Cloudflare 防护 | 需 headless=False + user-agent 伪装 |
+| 城市覆盖 | ⚠️ 部分城市数据少 | Montreal=0 events, Moncton=4 events |
+| 详情页 HTML | ~120K 字符 | 预清洗后 ~15-25K |
+
 ### 页面结构
 
-- 列表页: `https://www.todocanada.ca/{city}/events/`
-- 详情页: 点击活动标题进入，包含完整活动信息
+- 列表页: `https://www.todocanada.ca/city/{city}/events/`
+- 分页: `https://www.todocanada.ca/city/{city}/events/page/{n}/`
+- 详情页: `https://www.todocanada.ca/city/{city}/event/{slug}/`
 
 ### 城市路径映射
 
@@ -126,16 +139,14 @@ TODOCANADA_CITY_SLUGS = {
     "edmonton": "edmonton",
     "ottawa": "ottawa",
     "winnipeg": "winnipeg",
-    "montreal": "montreal",
+    "montreal": "montreal",    # ⚠️ Spike 验证: 0 events
     "saskatoon": "saskatoon",
     "regina": "regina",
-    "moncton": "moncton",
+    "moncton": "moncton",      # ⚠️ Spike 验证: 仅 4 events
 }
 ```
 
 ### 爬虫实现
-
-> **Spike 待验证**: 列表页 URL pattern、详情页链接匹配规则、是否有分页。
 
 ```python
 class TodoCanadaScraper(BaseScraper):
@@ -145,20 +156,29 @@ class TodoCanadaScraper(BaseScraper):
         self, city_slug: str, start_date: datetime, end_date: datetime
     ) -> list[RawPage]:
         slug = TODOCANADA_CITY_SLUGS[city_slug]
-        list_url = f"{self.BASE_URL}/{slug}/events/"
+        list_url = f"{self.BASE_URL}/city/{slug}/events/"
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            await page.goto(list_url, wait_until="networkidle")
+            browser = await p.chromium.launch(
+                headless=False,  # Cloudflare 防护需要
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            )
+            page = await context.new_page()
+            await page.goto(list_url, wait_until="domcontentloaded")
 
-            # 收集详情页链接（URL pattern spike 后确定）
-            detail_urls = await self._collect_links(page, r"todocanada\.ca/.+/event/")
+            # 收集详情页链接（Spike 验证: /city/{city}/event/{slug}/）
+            detail_urls = await self._collect_links(
+                page, rf"todocanada\.ca/city/{slug}/event/[^/]+/.*/?$"
+            )
 
             pages = []
             for url in detail_urls:
-                detail_page = await browser.new_page()
-                await detail_page.goto(url, wait_until="networkidle")
+                detail_page = await context.new_page()
+                await detail_page.goto(url, wait_until="domcontentloaded")
                 html = await detail_page.content()
                 og_image = await self._get_og_image(detail_page)
                 await detail_page.close()
@@ -177,9 +197,9 @@ class TodoCanadaScraper(BaseScraper):
 
 ### Spike 验证项
 
-- [ ] 确认列表页 URL pattern（`/{city}/events/` 还是 `/city/{city}/events/`）
-- [ ] 确认详情页 URL pattern，用于 `_collect_links` 过滤
-- [ ] 确认是否有分页，如何翻页
+- [x] ~~确认列表页 URL pattern~~ → `/city/{city}/events/`
+- [x] ~~确认详情页 URL pattern~~ → `/city/{city}/event/{slug}/`
+- [x] ~~确认是否有分页~~ → WordPress 标准分页 `/city/{city}/events/page/{n}/`
 
 ---
 
@@ -195,6 +215,9 @@ class TodoCanadaScraper(BaseScraper):
 | 城市主页 | `/toronto/`、`/vancouver/`、`/saskatoon/` | ✅ 活跃 | 有 2026 年最新活动指南 |
 | Events 日历 | `/toronto/events/` | ❌ 废弃 | 停留在 2021 年 1 月 |
 | REST API | `/toronto/wp-json/tribe/events/v1/events` | ❌ 404 | 未注册 |
+| 文章链接 | `/toronto/{slug}/` | ✅ 正确 | **不是** `/YYYY/MM/` pattern |
+| 文章分页 | `/toronto/page/{n}/` | ✅ 可用 | |
+| 文章内容 | 148K-165K 字符/页 | ⚠️ 较大 | 指南型文章为主，一页多活动 |
 
 ### 城市路径映射
 
@@ -229,27 +252,35 @@ class FamilyFunCanadaScraper(BaseScraper):
             page = await browser.new_page()
 
             # 收集城市主页上的文章链接
+            # Spike 验证: 文章 URL 是 /{city}/{slug}/ 不是 /YYYY/MM/
             city_url = f"{self.BASE_URL}/{slug}/"
-            await page.goto(city_url, wait_until="networkidle")
+            await page.goto(city_url, wait_until="domcontentloaded")
             article_urls = await self._collect_links(
-                page, r"familyfuncanada\.com/\d{4}/\d{2}/"
+                page, rf"familyfuncanada\.com/{slug}/[^/]+/.*/$"
             )
+            # 过滤掉非文章链接（分类、标签、日历等）
+            skip_patterns = ["/category/", "/tag/", "/calendar/", "/page/"]
+            article_urls = [
+                u for u in article_urls
+                if not any(p in u for p in skip_patterns)
+            ]
 
             # 处理分页
             for page_num in range(2, 4):  # 抓前 3 页
                 next_url = f"{self.BASE_URL}/{slug}/page/{page_num}/"
-                resp = await page.goto(next_url, wait_until="networkidle")
+                resp = await page.goto(next_url, wait_until="domcontentloaded")
                 if resp.status == 404:
                     break
                 more = await self._collect_links(
-                    page, r"familyfuncanada\.com/\d{4}/\d{2}/"
+                    page, rf"familyfuncanada\.com/{slug}/[^/]+/.*/$"
                 )
+                more = [u for u in more if not any(p in u for p in skip_patterns)]
                 article_urls.extend(more)
 
             pages = []
             for url in set(article_urls):
                 detail_page = await browser.new_page()
-                await detail_page.goto(url, wait_until="networkidle")
+                await detail_page.goto(url, wait_until="domcontentloaded")
                 html = await detail_page.content()
                 og_image = await self._get_og_image(detail_page)
                 await detail_page.close()
@@ -276,8 +307,17 @@ class FamilyFunCanadaScraper(BaseScraper):
 ## 数据源 3: DiscoverSaskatoon
 
 **网址**: `https://www.discoversaskatoon.com/calendar-events`
-**特点**: Drupal 10，"Load More" 动态分页
+**特点**: Drupal 10，分页加载
 **覆盖**: 仅 Saskatoon
+
+### Spike 验证结果 (2026-05-07)
+
+| 检查项 | 结果 | 说明 |
+|--------|------|------|
+| 列表页 | ✅ `/calendar-events` | |
+| 详情页 | ✅ `/calendar-events/{slug}` | 如 `/calendar-events/the-legendary-patsy-cline-show` |
+| 分页 | ✅ `?page=N` 参数 | "Load More" 链接到 `?page=1`、`?page=2` ... |
+| HTML 渲染 | 需 `domcontentloaded` | `networkidle` 会超时 |
 
 ### 爬虫实现
 
@@ -295,25 +335,30 @@ class DiscoverSaskatoonScraper(BaseScraper):
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            await page.goto(f"{self.BASE_URL}/calendar-events", wait_until="networkidle")
-
-            # 点击 "Load More" 加载全部
-            for _ in range(10):  # 最多点 10 次
-                btn = await page.query_selector('button:has-text("Load More")')
-                if not btn:
-                    break
-                await btn.click()
-                await page.wait_for_timeout(1000)
-
-            # 收集详情页链接
-            detail_urls = await self._collect_links(
-                page, r"discoversaskatoon\.com/calendar-events/.+"
+            await page.goto(
+                f"{self.BASE_URL}/calendar-events",
+                wait_until="domcontentloaded",
             )
 
+            # 分页加载（Spike 验证: ?page=N 参数，非按钮点击）
+            all_detail_urls = set()
+            for page_num in range(10):  # 最多 10 页
+                url = f"{self.BASE_URL}/calendar-events?page={page_num}" if page_num > 0 else f"{self.BASE_URL}/calendar-events"
+                await page.goto(url, wait_until="domcontentloaded")
+
+                # Spike 验证: /calendar-events/{slug}
+                detail_urls = await self._collect_links(
+                    page, r"discoversaskatoon\.com/calendar-events/[^/]+$"
+                )
+                new_urls = set(detail_urls) - all_detail_urls
+                if not new_urls:
+                    break
+                all_detail_urls.update(new_urls)
+
             pages = []
-            for url in detail_urls:
+            for url in all_detail_urls:
                 detail_page = await browser.new_page()
-                await detail_page.goto(url, wait_until="networkidle")
+                await detail_page.goto(url, wait_until="domcontentloaded")
                 html = await detail_page.content()
                 og_image = await self._get_og_image(detail_page)
                 await detail_page.close()
@@ -332,8 +377,8 @@ class DiscoverSaskatoonScraper(BaseScraper):
 
 ### Spike 验证项
 
-- [ ] 确认详情页 URL pattern，用于链接过滤
-- [ ] 确认 "Load More" 按钮的选择器/行为
+- [x] ~~确认详情页 URL pattern~~ → `/calendar-events/{slug}`
+- [x] ~~确认 "Load More" 行为~~ → `?page=N` 参数分页
 
 ---
 
@@ -453,22 +498,22 @@ async def process_city(city_slug: str, start_date: datetime, end_date: datetime)
 
 ## Spike 验证清单
 
-由于数据提取完全由 LLM 处理，Spike 验证大幅简化。只需确认**页面导航**相关的问题：
+全部验证完成 (2026-05-07)。
 
 ### 通用验证（每个数据源）
 
-| 检查项 | 说明 |
-|--------|------|
-| 列表页可访问 | 确认列表页 URL pattern 正确 |
-| 详情页链接收集 | 确认 URL pattern 能过滤出正确的详情页链接 |
-| 反爬测试 | 连续请求 5-10 次，检查是否被封 |
-| 分页/动态加载 | 确认翻页或 "Load More" 的行为 |
+| 检查项 | TodoCanada | DiscoverSaskatoon | FamilyFunCanada |
+|--------|-----------|-------------------|-----------------|
+| 列表页可访问 | ✅ `/city/{city}/events/` | ✅ `/calendar-events` | ✅ `/{city}/` |
+| 详情页链接收集 | ✅ `/city/{city}/event/{slug}/` | ✅ `/calendar-events/{slug}` | ✅ `/{city}/{slug}/` |
+| 反爬测试 | ⚠️ Cloudflare，需 headless=False | ✅ 无限制 | ✅ 无限制 |
+| 分页/动态加载 | ✅ WordPress 分页 `page/{n}` | ✅ `?page=N` 参数 | ✅ `/{city}/page/{n}/` |
 
-### 各源 Spike 优先级
+### 各源 Spike 结论
 
-1. **TodoCanada** — 覆盖最广，优先验证 URL pattern 和分页
-2. **DiscoverSaskatoon** — 验证 "Load More" 行为和详情页 URL
-3. **FamilyFunCanada** — 验证文章链接 pattern 和分页
+1. **TodoCanada** — Cloudflare 防护需特殊处理，10 城市中 Montreal 无数据、Moncton 仅 4 条
+2. **DiscoverSaskatoon** — 分页使用 `?page=N` 参数（非按钮点击），需 `domcontentloaded` 避免超时
+3. **FamilyFunCanada** — 文章 URL 是 `/{city}/{slug}/` 而非 `/YYYY/MM/`，内容以指南型文章为主
 
 ### 反爬策略
 
