@@ -8,23 +8,23 @@
 
 - **数据源**: 从 TodoCanada、DiscoverSaskatoon、FamilyFunCanada（一期）抓取活动，Facebook Events（二期）
 - **AI 处理**: LLM 统一处理原始 HTML → 提取结构化数据 + 翻译 + 摘要 + 质量评估，一步到位
-- **半自动模式**: 自动抓取 + AI 处理 → 通过 API 发布 → 平台内置审核流程过滤
+- **人工审核模式**: 自动抓取 + AI 处理 → 管理界面人工审核 → 选择性发布到平台 → 平台内置审核流程过滤
 - **覆盖城市**: 温哥华、多伦多、蒙特利尔、卡尔加里、埃德蒙顿、渥太华、温尼伯、萨斯卡通、里贾纳、蒙克顿
 
 ## 系统架构
 
 ```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│  数据源抓取   │ ──→ │  AI 处理引擎  │ ──→ │  去重 & 存储  │ ──→ │  API 发布    │
-│  (Scrapers)  │     │  (AI Engine)  │     │  (Storage)   │     │  (Publisher) │
-└──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
-       │                    │                    │                    │
-  Playwright           Kimi API             SQLite DB         海外新生活 API
-  抓取原始HTML          提取+翻译+摘要                           POST activity/release
-  (所有源统一逻辑)      (所有源统一Prompt)
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│  数据源抓取   │ ──→ │  AI 处理引擎  │ ──→ │  去重 & 存储  │ ──→ │  管理界面     │ ──→ │  API 发布    │
+│  (Scrapers)  │     │  (AI Engine)  │     │  (Storage)   │     │  (Web UI)    │     │  (Publisher) │
+└──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
+       │                    │                    │                    │                    │
+  Playwright           Kimi API             SQLite DB          FastAPI +          海外新生活 API
+  抓取原始HTML          提取+翻译+摘要                           Jinja2 + HTMX      POST activity/release
+  (所有源统一逻辑)      (所有源统一Prompt)                      人工审核+选择性发布
 ```
 
-核心设计：**爬虫只负责页面导航和抓取原始 HTML，LLM 负责提取结构化数据 + 翻译 + 摘要**。所有数据源使用同一套逻辑，无需为每个站点的页面结构写 CSS 选择器来提取数据。
+核心设计：**爬虫只负责页面导航和抓取原始 HTML，LLM 负责提取结构化数据 + 翻译 + 摘要**。所有数据源使用同一套逻辑，无需为每个站点的页面结构写 CSS 选择器来提取数据。**管理界面提供人工审核能力**，用户可在发布前预览、筛选和选择要发布的活动。
 
 ## 数据流
 
@@ -32,8 +32,9 @@
 2. **AI 处理**: LLM 一次调用完成：提取活动信息 + 翻译（英→中）+ 摘要 + 分类 + 质量评估
 3. **去重**: 页面缓存（processed_pages + html_hash，避免重复 LLM 调用）+ 事件级 source_id 精确去重 + 标题/时间/地址 hash 内容去重（一期），AI 相似度去重（二期）
 4. **存储**: 保存处理后的活动到本地数据库，记录来源和发布状态
-5. **发布**: 调用海外新生活 `activity/release/` API 发布活动
-6. **审核**: 平台内置审核系统（`perform_sync_moderation`）自动审核
+5. **人工审核**: 管理界面按城市展示待发布活动，用户预览详情后选择性发布
+6. **发布**: 调用海外新生活 `activity/release/` API 发布用户选择的活动
+7. **审核**: 平台内置审核系统（`perform_sync_moderation`）自动审核
 
 ## 技术栈
 
@@ -44,6 +45,7 @@
 | AI 引擎 | Kimi kimi-k2.6 (月之暗面) | 提取+翻译+摘要+评估，统一 Prompt |
 | HTTP 客户端 | httpx + Playwright | 异步 HTTP + 浏览器渲染 |
 | 数据库 | SQLite → PostgreSQL | 轻量起步，后续可迁移 |
+| 管理界面 | FastAPI + Jinja2 + HTMX | 人工审核、选择性发布 |
 | 定时调度 | APScheduler | Python 原生调度器 |
 | 配置管理 | pydantic-settings | 类型安全的配置 |
 | 日志 | loguru | 比 logging 更好用 |
@@ -52,7 +54,7 @@
 
 | 阶段 | 内容 | 文档 |
 |------|------|------|
-| 一期 | TodoCanada + FamilyFunCanada + DiscoverSaskatoon 抓取 + AI 翻译 + API 发布 | [02-scraper-design.md](./02-scraper-design.md) |
+| 一期 | TodoCanada + FamilyFunCanada + DiscoverSaskatoon 抓取 + AI 翻译 + 管理界面 + 选择性发布 | [02-scraper-design.md](./02-scraper-design.md) |
 | 二期 | Facebook Events 和其他数据源扩展 | 后续文档 |
 | 三期 | 智能去重 + 质量评分 | 后续文档 |
 
@@ -81,7 +83,10 @@ activities-publish/
 │   │   └── woohelps.py      # 海外新生活 API 客户端
 │   ├── dedup/               # 去重模块
 │   │   └── deduplicator.py  # 活动去重
-│   └── main.py              # 主入口
+│   ├── web/                 # 管理界面
+│   │   ├── app.py           # FastAPI 应用 + 路由
+│   │   └── templates/       # Jinja2 模板
+│   └── main.py              # CLI 主入口（抓取调度）
 ├── tests/                   # 测试
 ├── pyproject.toml           # 项目配置
 ├── .env.example             # 环境变量模板

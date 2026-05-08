@@ -5,91 +5,75 @@
 ### 活动表 `activities`
 
 ```sql
-CREATE TABLE activities (
+-- 与 src/storage/db.py _CREATE_TABLES 完全一致
+CREATE TABLE IF NOT EXISTS activities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
 
     -- 来源信息
-    source TEXT NOT NULL,              -- 数据来源 (todocanada/familyfuncanada/discoversaskatoon)
-    source_id TEXT NOT NULL,           -- 来源平台活动 ID
-    source_url TEXT,                   -- 原始链接
+    source TEXT NOT NULL,              -- todocanada/familyfuncanada/discoversaskatoon
+    source_id TEXT NOT NULL,           -- 确定性 ID: source_url#<hash>[:8]
+    source_url TEXT NOT NULL,
+    city_slug TEXT NOT NULL,           -- toronto/vancouver/...
 
-    -- 英文原始数据
+    -- 标题
     title_en TEXT NOT NULL,
-    description_en TEXT,
-    html_en TEXT,
+    title_zh TEXT NOT NULL,
 
     -- 中文处理后的数据
-    title_zh TEXT,
-    description_zh TEXT,
-    html_zh TEXT,
+    description_zh TEXT NOT NULL,      -- 中文摘要
+    html_zh TEXT NOT NULL,             -- 翻译后的中文 HTML
 
     -- 时间和地点
-    start_time DATETIME NOT NULL,      -- UTC（用于去重、排序、发布）
-    end_time DATETIME NOT NULL,        -- UTC
-    start_time_local DATETIME,         -- 城市本地时间（用于调试）
-    end_time_local DATETIME,           -- 城市本地时间
-    timezone TEXT,                      -- IANA 时区（如 America/Toronto）
-    address TEXT,
-    latitude REAL,
-    longitude REAL,
+    start_time TEXT,                   -- UTC, ISO format
+    end_time TEXT,                     -- UTC, ISO format
+    timezone TEXT,                     -- IANA 时区（如 America/Toronto）
+    address TEXT NOT NULL DEFAULT '',
+    venue_name TEXT,
 
     -- 图片
-    image_url TEXT,                    -- 原始图片 URL
-    local_image_url TEXT,              -- 上传到 COS 后的 URL
+    image_url TEXT,
+    image_urls TEXT NOT NULL DEFAULT '[]',  -- JSON array
 
     -- 活动属性
-    is_free BOOLEAN DEFAULT 1,
-    price TEXT,                        -- 爬虫原始价格字符串（如 "$10-$20", "Free"）
-    fee_amount REAL DEFAULT 0,         -- 解析后的数值价格，供发布使用
-    fee_parsed_free BOOLEAN DEFAULT 1, -- parse_fee_amount 派生，覆盖爬虫 is_free
-    venue_name TEXT,
-    city_slug TEXT NOT NULL,           -- 城市标识
-    activity_type INTEGER DEFAULT 1,   -- 活动类型 (1-6)
+    price TEXT,                        -- 原始价格字符串（如 "$10-$20", "Free"）
+    is_free INTEGER NOT NULL DEFAULT 1,
+    fee_amount REAL NOT NULL DEFAULT 0.0,
+    fee_parsed_free INTEGER NOT NULL DEFAULT 1,
+    activity_type INTEGER NOT NULL DEFAULT 1,  -- 1-6
 
     -- AI 处理结果
-    ai_highlights TEXT,                -- JSON array
-    quality_score REAL,                -- 质量评分 0-1
-    is_suitable BOOLEAN DEFAULT 1,     -- 是否适合发布
+    highlights TEXT NOT NULL DEFAULT '[]',     -- JSON array
 
     -- 发布状态
-    status TEXT DEFAULT 'pending',     -- pending/processing/published/failed/skipped
-    woohelps_activity_id INTEGER,      -- 平台活动 ID
-    publish_time DATETIME,             -- 发布时间
-    publish_error TEXT,                -- 发布失败原因
+    status TEXT NOT NULL DEFAULT 'pending',    -- pending/published/failed/skipped
+    platform_activity_id INTEGER,              -- 平台活动 ID（发布成功后写入）
+    publish_error TEXT,                        -- 发布失败原因
+
+    -- 去重
+    content_hash TEXT,
 
     -- 元数据
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
 
-    -- 去重用的 hash
-    content_hash TEXT,                 -- 标题+时间的 hash，用于快速去重
-
-    UNIQUE(source, source_id)          -- 同一来源同一活动不重复
+    UNIQUE(source, source_id)
 );
 
-CREATE INDEX idx_activities_city ON activities(city_slug);
-CREATE INDEX idx_activities_status ON activities(status);
-CREATE INDEX idx_activities_start_time ON activities(start_time);
-CREATE INDEX idx_activities_content_hash ON activities(content_hash);
+CREATE INDEX IF NOT EXISTS idx_activities_city ON activities(city_slug);
+CREATE INDEX IF NOT EXISTS idx_activities_status ON activities(status);
+CREATE INDEX IF NOT EXISTS idx_activities_start_time ON activities(start_time);
+CREATE INDEX IF NOT EXISTS idx_activities_content_hash ON activities(city_slug, content_hash);
 ```
 
-### 抓取记录表 `scrape_logs`
-
-```sql
-CREATE TABLE scrape_logs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source TEXT NOT NULL,
-    city_slug TEXT NOT NULL,
-    start_date DATETIME NOT NULL,
-    end_date DATETIME NOT NULL,
-    total_fetched INTEGER DEFAULT 0,
-    total_new INTEGER DEFAULT 0,
-    total_skipped INTEGER DEFAULT 0,
-    status TEXT DEFAULT 'success',     -- success/partial/failed
-    error_message TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
+> **本地时间显示**：数据库只存 UTC 时间 + IANA 时区。管理界面显示本地时间时动态换算：
+> ```python
+> from zoneinfo import ZoneInfo
+> from datetime import datetime, timezone
+>
+> def utc_to_local(utc_str: str, tz_str: str) -> str:
+>     utc_dt = datetime.fromisoformat(utc_str).replace(tzinfo=timezone.utc)
+>     return utc_dt.astimezone(ZoneInfo(tz_str)).strftime("%Y-%m-%d %H:%M")
+> ```
 
 ### 页面处理记录表 `processed_pages`
 
@@ -100,14 +84,15 @@ CREATE TABLE processed_pages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source TEXT NOT NULL,
     source_url TEXT NOT NULL,
-    UNIQUE(source, source_url),       -- 同一来源同一 URL 不重复
-    html_hash TEXT NOT NULL,          -- 页面 HTML 内容 hash，检测是否变化
-    status TEXT NOT NULL DEFAULT 'success',  -- success/failed/empty
-    activity_count INTEGER DEFAULT 0, -- 提取到的活动数量
-    processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    UNIQUE(source, source_url),
+    html_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    activity_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX idx_processed_pages_source ON processed_pages(source);
+CREATE INDEX idx_processed_pages_hash ON processed_pages(html_hash);
 ```
 
 ```python
@@ -123,6 +108,25 @@ def compute_html_hash(html: str) -> str:
 - 如果存在且 `html_hash` 相同且 `status` 为 `success` 或 `empty` → 跳过（内容未变，已处理）
 - 如果 `html_hash` 不同或 `status = 'failed'` → 重新处理（页面已更新或上次失败）
 - 查不到记录 → 首次处理
+
+### 抓取任务表 `scrape_tasks`（管理界面用）
+
+跟踪管理界面触发的抓取任务状态，用于 HTMX 轮询显示进度。
+
+```sql
+CREATE TABLE IF NOT EXISTS scrape_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    city_slugs TEXT NOT NULL,          -- JSON array, 如 ["toronto", "vancouver"]
+    status TEXT NOT NULL DEFAULT 'running',  -- running/completed/failed
+    total_fetched INTEGER DEFAULT 0,
+    total_new INTEGER DEFAULT 0,
+    total_skipped INTEGER DEFAULT 0,
+    current_city TEXT,                 -- 正在处理的城市
+    error_message TEXT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT
+);
+```
 
 ## 去重策略
 
@@ -189,18 +193,23 @@ SIMILARITY_PROMPT = """判断以下两个活动是否是同一个活动：
 
 ## 发布状态流转
 
+使用 `status` (TEXT) 字段跟踪发布状态，配合 `platform_activity_id`、`publish_error` 辅助字段。
+
 ```
-pending ──→ processing ──→ published
-   │              │
-   │              └──→ failed ──→ pending (重试)
+pending ──→ published
    │
-   └──→ skipped (质量评估不通过)
+   ├──→ failed ──→ published (重试成功)
+   │
+   └──→ skipped (内容重复，跳过)
 ```
 
-| 状态 | 说明 |
-|------|------|
-| `pending` | 已抓取，等待 AI 处理 |
-| `processing` | AI 处理完成，等待发布 |
-| `published` | 已成功发布到平台 |
-| `failed` | 发布失败，可重试 |
-| `skipped` | 质量评估不通过或重复，跳过 |
+| 状态 | 说明 | 对应代码 |
+|------|------|---------|
+| `pending` | 已入库，等待发布 | 初始状态，`db.save()` 写入 |
+| `published` | 已成功发布到平台 | `mark_published()` 设置 `status='published'` + `platform_activity_id` |
+| `failed` | 发布失败，可重试 | `mark_publish_failed()` 设置 `status='failed'` + `publish_error` |
+| `skipped` | 内容重复，跳过 | `mark_skipped()` 设置 `status='skipped'` |
+
+**当前行为**（Step 9）：`process_city()` 在 `db.save()` 后立即尝试发布（main.py:90-102），成功则 `mark_published()`，失败则 `mark_publish_failed()`。活动在数据库中经历 `pending → published/failed`。
+
+**管理界面目标**（Step 10.1）：拆分后 `scrape_city()` 只做存储（`status='pending'`），活动停留在管理界面等待人工审核，由用户手动触发发布。
