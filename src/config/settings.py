@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     KIMI_API_KEY: str
     KIMI_BASE_URL: str = "https://api.kimi.com/coding/"
     KIMI_MODEL: str = "kimi-k2.6"
+    KIMI_MAX_TOKENS: int = 8192
 
     # 海外新生活平台 API
     WOOHELPS_API_URL: str = "https://www.woohelps.com"
@@ -21,6 +22,9 @@ class Settings(BaseSettings):
 
     # 数据库
     DB_PATH: str = "./data/activities.db"
+
+    # 管理界面
+    ADMIN_PASSWORD: str = ""  # 可选，设置后管理界面启用 Basic Auth
 
     # 日志
     LOG_LEVEL: str = "INFO"

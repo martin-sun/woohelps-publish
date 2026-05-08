@@ -13,7 +13,7 @@ def _normalize_text(text: str) -> str:
 
 
 def compute_html_hash(html: str) -> str:
-    return hashlib.sha256(html.encode()).hexdigest()[:16]
+    return hashlib.sha256(html.encode()).hexdigest()[:32]
 
 
 def compute_content_hash(activity: ProcessedActivity) -> str:
@@ -22,4 +22,4 @@ def compute_content_hash(activity: ProcessedActivity) -> str:
     start = activity.start_time_utc.isoformat() if activity.start_time_utc else ""
     address = _normalize_text(activity.address or "")
     key = f"{title}|{start}|{address}"
-    return hashlib.sha256(key.encode()).hexdigest()[:16]
+    return hashlib.sha256(key.encode()).hexdigest()[:32]

@@ -66,6 +66,7 @@ class WoohelpsPublisher:
             "description": activity.description_zh,
             "html": activity.html_zh,
             "city_id": city_id,
+            "city_area_id": 0,
             "start_time": activity.start_time_utc.strftime("%Y-%m-%d %H:%M") if activity.start_time_utc else "",
             "end_time": activity.end_time_utc.strftime("%Y-%m-%d %H:%M") if activity.end_time_utc else "",
             "address": activity.address,

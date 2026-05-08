@@ -24,6 +24,10 @@ TODOCANADA_CITY_SLUGS = {
 class TodoCanadaScraper(BaseScraper):
     BASE_URL = "https://www.todocanada.ca"
 
+    @property
+    def supported_cities(self) -> set[str]:
+        return set(TODOCANADA_CITY_SLUGS.keys())
+
     async def fetch_pages(
         self, city_slug: str, start_date: datetime, end_date: datetime
     ) -> list[RawPage]:

@@ -127,7 +127,7 @@ def _generate_source_id(
 ) -> str:
     datetime_key = f"{start_date or ''}{'T' + start_time if start_time else ''}"
     key = f"{_normalize_source_text(title_en)}|{datetime_key}|{_normalize_source_text(address)}"
-    suffix = hashlib.md5(key.encode()).hexdigest()[:8]
+    suffix = hashlib.md5(key.encode()).hexdigest()[:16]
     return f"{source_url}#{suffix}"
 
 
@@ -137,22 +137,27 @@ def parse_llm_datetime(
     """将 LLM 输出的日期+时间解析为 UTC naive datetime"""
     if not date_str:
         return None
-    tz = ZoneInfo(CITY_TIMEZONES[city_slug])
-    if time_str:
-        local_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-    else:
-        local_dt = datetime.strptime(date_str, "%Y-%m-%d")
-    aware = local_dt.replace(tzinfo=tz)
-    return aware.astimezone(timezone.utc).replace(tzinfo=None)
+    try:
+        tz = ZoneInfo(CITY_TIMEZONES[city_slug])
+        if time_str:
+            local_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        else:
+            local_dt = datetime.strptime(date_str, "%Y-%m-%d")
+        aware = local_dt.replace(tzinfo=tz)
+        return aware.astimezone(timezone.utc).replace(tzinfo=None)
+    except (ValueError, KeyError) as e:
+        logger.warning(f"Failed to parse LLM datetime: date={date_str}, time={time_str}, city={city_slug}: {e}")
+        return None
 
 
 class AIEngine:
-    def __init__(self, api_key: str, base_url: str, model: str):
+    def __init__(self, api_key: str, base_url: str, model: str, max_tokens: int = 8192):
         self.client = anthropic.AsyncAnthropic(
             base_url=base_url,
             api_key=api_key,
         )
         self.model = model
+        self.max_tokens = max_tokens
 
     @classmethod
     def from_settings(cls, settings) -> "AIEngine":
@@ -160,6 +165,7 @@ class AIEngine:
             api_key=settings.KIMI_API_KEY,
             base_url=settings.KIMI_BASE_URL,
             model=settings.KIMI_MODEL,
+            max_tokens=settings.KIMI_MAX_TOKENS,
         )
 
     async def process(self, raw_page: RawPage) -> list[ProcessedActivity]:
@@ -169,7 +175,7 @@ class AIEngine:
 
         response = await self.client.messages.create(
             model=self.model,
-            max_tokens=8192,
+            max_tokens=self.max_tokens,
             messages=[{
                 "role": "user",
                 "content": PROCESS_PROMPT.format(
@@ -188,7 +194,7 @@ class AIEngine:
         if code_block:
             json_text = code_block.group(1).strip()
         else:
-            # 逐层匹配花括号，找到第一个有效的 JSON 对象
+            # 逐层匹配花括号，找到第一个有效 JSON 对象
             depth = 0
             start = None
             for i, ch in enumerate(text):
@@ -199,8 +205,13 @@ class AIEngine:
                 elif ch == '}':
                     depth -= 1
                     if depth == 0 and start is not None:
-                        json_text = text[start:i + 1]
-                        break
+                        candidate = text[start:i + 1]
+                        try:
+                            json.loads(candidate)
+                            json_text = candidate
+                            break
+                        except json.JSONDecodeError:
+                            start = None
 
         if not json_text:
             logger.warning(f"No JSON found in LLM response for {raw_page.source_url}")

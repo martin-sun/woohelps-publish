@@ -16,6 +16,7 @@ ALLOWED_ATTRIBUTES = {
     "img": ["src", "alt", "width", "height"],
     "td": ["colspan", "rowspan"],
     "th": ["colspan", "rowspan"],
+    "p": ["style"],
 }
 
 ALLOWED_PROTOCOLS = ["http", "https", "mailto"]

@@ -15,7 +15,6 @@ FAMILYFUN_CITY_SLUGS = {
     "ottawa": "ottawa",
     "winnipeg": "winnipeg",
     "montreal": "montreal",
-    "saskatoon": "saskatoon",
 }
 
 
