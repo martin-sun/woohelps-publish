@@ -10,7 +10,7 @@ from src.ai.engine import AIEngine
 from src.ai.sanitizer import sanitize_html
 from src.config.settings import CITIES, get_settings
 from src.dedup.deduplicator import compute_content_hash, compute_html_hash
-from src.publisher.woohelps import WoohelpsPublisher, parse_fee_amount
+from src.publisher.woohelps import parse_fee_amount
 from src.scrapers.familyfun import FamilyFunCanadaScraper
 from src.scrapers.saskatoon import DiscoverSaskatoonScraper
 from src.scrapers.todocanada import TodoCanadaScraper
@@ -42,9 +42,9 @@ async def fetch_all_pages(
 
 async def process_city(
     city_slug: str, start_date: datetime, end_date: datetime,
-    db: Database, ai_engine: AIEngine, publisher,
+    db: Database, ai_engine: AIEngine,
 ):
-    """处理单个城市：抓取 → AI 处理 → 去重 → 存储 → 发布"""
+    """处理单个城市：抓取 → AI 处理 → 去重 → 存储"""
     logger.info(f"Processing city: {city_slug}")
 
     raw_pages = await fetch_all_pages(city_slug, start_date, end_date)
@@ -63,7 +63,7 @@ async def process_city(
             logger.error(f"LLM processing failed for {page.source_url}: {e}")
             continue
 
-        published_count = 0
+        new_count = 0
         for activity in activities:
             if not activity.start_time_utc:
                 continue
@@ -77,36 +77,21 @@ async def process_city(
             if await db.exists_content_hash(activity.city_slug, activity.content_hash):
                 continue
 
-            # 存储前完成 fee 解析（设计文档要求：存储阶段解析，而非发布阶段）
             fee_amount, fee_parsed_free = parse_fee_amount(activity.price)
             activity.fee_amount = fee_amount
             activity.fee_parsed_free = fee_parsed_free
 
             activity.html_zh = sanitize_html(activity.html_zh, page.source_url)
 
-            activity.status = "processing"
             await db.save(activity)
-
-            city_id = publisher.get_city_id(CITIES[city_slug]["eng_name"])
-            if city_id:
-                try:
-                    result = await publisher.publish_activity(activity, city_id)
-                    if result.get("errcode") == 0:
-                        await db.mark_published(activity.source, activity.source_id, result.get("activity_id", 0))
-                        published_count += 1
-                    else:
-                        logger.warning(f"Publish rejected for {activity.source_id}: {result.get('errmsg')}")
-                        await db.mark_publish_failed(activity.source, activity.source_id, result.get("errmsg", ""))
-                except Exception as e:
-                    logger.error(f"Publish failed for {activity.source_id}: {e}")
-                    await db.mark_publish_failed(activity.source, activity.source_id, str(e))
+            new_count += 1
 
         await db.save_processed_page(
             page.source, page.source_url, html_hash,
             "success" if activities else "empty",
             activity_count=len(activities),
         )
-        logger.info(f"{city_slug}/{page.source}: {len(activities)} activities, {published_count} published")
+        logger.info(f"{city_slug}/{page.source}: {len(activities)} activities, {new_count} new")
 
 
 async def run_once(city: str | None = None):
@@ -116,15 +101,12 @@ async def run_once(city: str | None = None):
     async with Database(settings.DB_PATH) as db:
         ai_engine = AIEngine.from_settings(settings)
 
-        async with WoohelpsPublisher(settings.WOOHELPS_API_URL, settings.WOOHELPS_LOGIN_SESSION) as publisher:
-            await publisher.fetch_city_mapping()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        end_date = now + timedelta(days=30)
 
-            now = datetime.now(timezone.utc).replace(tzinfo=None)
-            end_date = now + timedelta(days=30)
-
-            cities = [city] if city else list(CITIES.keys())
-            for city_slug in cities:
-                await process_city(city_slug, now, end_date, db, ai_engine, publisher)
+        cities = [city] if city else list(CITIES.keys())
+        for city_slug in cities:
+            await process_city(city_slug, now, end_date, db, ai_engine)
 
     logger.info("Run complete")
 

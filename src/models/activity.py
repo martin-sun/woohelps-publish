@@ -56,5 +56,6 @@ class ProcessedActivity:
     content_hash: str | None = None
 
     # 发布状态
-    status: str = "pending"        # pending/processing/published/failed/skipped
+    status: str = "pending"        # pending/published/failed/skipped
     platform_activity_id: int | None = None
+    publish_error: str | None = None

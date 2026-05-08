@@ -15,30 +15,23 @@ CREATE TABLE IF NOT EXISTS activities (
     source_url TEXT NOT NULL,
     city_slug TEXT NOT NULL,
 
-    -- 英文原始数据
+    -- 标题
     title_en TEXT NOT NULL,
-    description_en TEXT,
-    html_en TEXT,
+    title_zh TEXT NOT NULL,
 
     -- 中文处理后的数据
-    title_zh TEXT NOT NULL,
     description_zh TEXT NOT NULL,
     html_zh TEXT NOT NULL,
 
     -- 时间和地点
     start_time TEXT,                    -- UTC
     end_time TEXT,                      -- UTC
-    start_time_local TEXT,              -- 城市本地时间
-    end_time_local TEXT,                -- 城市本地时间
     timezone TEXT,                      -- IANA 时区
     address TEXT NOT NULL DEFAULT '',
     venue_name TEXT,
-    latitude REAL,
-    longitude REAL,
 
     -- 图片
     image_url TEXT,
-    local_image_url TEXT,
     image_urls TEXT NOT NULL DEFAULT '[]',
 
     -- 活动属性
@@ -50,14 +43,10 @@ CREATE TABLE IF NOT EXISTS activities (
 
     -- AI 处理结果
     highlights TEXT NOT NULL DEFAULT '[]',
-    ai_highlights TEXT,                 -- JSON array (alias, for future use)
-    quality_score REAL,
-    is_suitable INTEGER NOT NULL DEFAULT 1,
 
     -- 发布状态
-    status TEXT NOT NULL DEFAULT 'pending',  -- pending/processing/published/failed/skipped
-    woohelps_activity_id INTEGER,
-    publish_time TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending/published/failed/skipped
+    platform_activity_id INTEGER,
     publish_error TEXT,
 
     -- 去重
@@ -83,18 +72,17 @@ CREATE TABLE IF NOT EXISTS processed_pages (
     UNIQUE(source, source_url)
 );
 
-CREATE TABLE IF NOT EXISTS scrape_logs (
+CREATE TABLE IF NOT EXISTS scrape_tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source TEXT NOT NULL,
-    city_slug TEXT NOT NULL,
-    start_date TEXT NOT NULL,
-    end_date TEXT NOT NULL,
+    city_slugs TEXT NOT NULL,              -- JSON array, e.g. ["toronto", "vancouver"]
+    status TEXT NOT NULL DEFAULT 'running',  -- running/completed/failed
     total_fetched INTEGER NOT NULL DEFAULT 0,
     total_new INTEGER NOT NULL DEFAULT 0,
     total_skipped INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'success',
+    current_city TEXT,
     error_message TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_activities_city ON activities(city_slug);
@@ -135,22 +123,36 @@ class Database:
         cursor = await self._db.execute(
             """INSERT INTO activities (
                 source, source_id, source_url, city_slug,
-                title_en, description_zh, html_zh,
+                title_en, title_zh, description_zh, html_zh,
                 address, venue_name,
                 price, is_free, fee_amount, fee_parsed_free,
                 start_time, end_time, timezone,
                 image_url, image_urls, highlights, activity_type, content_hash,
                 status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source, source_id) DO UPDATE SET
+                title_en=excluded.title_en,
                 title_zh=excluded.title_zh,
                 description_zh=excluded.description_zh,
                 html_zh=excluded.html_zh,
+                address=excluded.address,
+                venue_name=excluded.venue_name,
+                price=excluded.price,
+                is_free=excluded.is_free,
+                fee_amount=excluded.fee_amount,
+                fee_parsed_free=excluded.fee_parsed_free,
+                start_time=excluded.start_time,
+                end_time=excluded.end_time,
+                image_url=excluded.image_url,
+                image_urls=excluded.image_urls,
+                highlights=excluded.highlights,
+                activity_type=excluded.activity_type,
+                content_hash=excluded.content_hash,
                 updated_at=datetime('now')
             """,
             (
                 activity.source, activity.source_id, activity.source_url, activity.city_slug,
-                activity.title_en, activity.description_zh, activity.html_zh,
+                activity.title_en, activity.title_zh, activity.description_zh, activity.html_zh,
                 activity.address, activity.venue_name,
                 activity.price, int(activity.is_free), activity.fee_amount, int(activity.fee_parsed_free),
                 activity.start_time_utc.isoformat() if activity.start_time_utc else None,
@@ -184,8 +186,8 @@ class Database:
     async def mark_published(self, source: str, source_id: str, platform_id: int):
         await self._db.execute(
             """UPDATE activities
-               SET status = 'published', woohelps_activity_id = ?,
-                   publish_time = datetime('now'), updated_at = datetime('now')
+               SET status = 'published', platform_activity_id = ?,
+                   updated_at = datetime('now')
                WHERE source = ? AND source_id = ?""",
             (platform_id, source, source_id),
         )
@@ -235,18 +237,53 @@ class Database:
         )
         await self._db.commit()
 
-    # --- Scrape Logs ---
+    # --- Scrape Tasks ---
 
-    async def save_scrape_log(
-        self, source: str, city_slug: str,
-        start_date: str, end_date: str,
-        total_fetched: int = 0, total_new: int = 0, total_skipped: int = 0,
-        status: str = "success", error_message: str | None = None,
+    async def create_scrape_task(self, city_slugs: list[str]) -> int:
+        cursor = await self._db.execute(
+            """INSERT INTO scrape_tasks (city_slugs) VALUES (?)""",
+            (json.dumps(city_slugs),),
+        )
+        await self._db.commit()
+        return cursor.lastrowid
+
+    async def update_scrape_task(
+        self, task_id: int, *,
+        status: str | None = None,
+        total_fetched: int | None = None,
+        total_new: int | None = None,
+        total_skipped: int | None = None,
+        current_city: str | None = None,
+        error_message: str | None = None,
+        completed_at: str | None = None,
     ):
+        parts, args = [], []
+        if status is not None:
+            parts.append("status = ?")
+            args.append(status)
+        if total_fetched is not None:
+            parts.append("total_fetched = ?")
+            args.append(total_fetched)
+        if total_new is not None:
+            parts.append("total_new = ?")
+            args.append(total_new)
+        if total_skipped is not None:
+            parts.append("total_skipped = ?")
+            args.append(total_skipped)
+        if current_city is not None:
+            parts.append("current_city = ?")
+            args.append(current_city)
+        if error_message is not None:
+            parts.append("error_message = ?")
+            args.append(error_message)
+        if completed_at is not None:
+            parts.append("completed_at = ?")
+            args.append(completed_at)
+        if not parts:
+            return
+        args.append(task_id)
         await self._db.execute(
-            """INSERT INTO scrape_logs
-               (source, city_slug, start_date, end_date, total_fetched, total_new, total_skipped, status, error_message)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (source, city_slug, start_date, end_date, total_fetched, total_new, total_skipped, status, error_message),
+            f"""UPDATE scrape_tasks SET {', '.join(parts)} WHERE id = ?""",
+            args,
         )
         await self._db.commit()
