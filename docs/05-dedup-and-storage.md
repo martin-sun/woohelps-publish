@@ -91,7 +91,47 @@ CREATE TABLE scrape_logs (
 );
 ```
 
+### 页面处理记录表 `processed_pages`
+
+独立于活动表，用于避免对同一页面重复调用 LLM。通过 html_hash 检测页面内容是否变化，支持持续更新的 guide 页面和失败恢复。
+
+```sql
+CREATE TABLE processed_pages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    UNIQUE(source, source_url),       -- 同一来源同一 URL 不重复
+    html_hash TEXT NOT NULL,          -- 页面 HTML 内容 hash，检测是否变化
+    status TEXT NOT NULL DEFAULT 'success',  -- success/failed/empty
+    activity_count INTEGER DEFAULT 0, -- 提取到的活动数量
+    processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_processed_pages_source ON processed_pages(source);
+```
+
+```python
+import hashlib
+
+def compute_html_hash(html: str) -> str:
+    """计算页面 HTML 内容 hash，用于检测页面是否变化"""
+    return hashlib.sha256(html.encode()).hexdigest()[:16]
+```
+
+**判断逻辑**：
+- 查询 processed_pages 中该 source_url 的记录
+- 如果存在且 `html_hash` 相同且 `status` 为 `success` 或 `empty` → 跳过（内容未变，已处理）
+- 如果 `html_hash` 不同或 `status = 'failed'` → 重新处理（页面已更新或上次失败）
+- 查不到记录 → 首次处理
+
 ## 去重策略
+
+### 第零层：页面级缓存（processed_pages）
+
+避免对同一页面重复调用 LLM。通过 `processed_pages` 表记录已处理页面的 `html_hash`：
+- 内容未变 + 上次 success/empty → 跳过（节省 LLM 调用）
+- 内容变化或上次失败 → 重新处理（支持 guide 页更新和失败恢复）
+- 多活动页面的活动通过事件级 source_id 去重，不受页面缓存影响
 
 ### 第一层：精确去重（source + source_id）
 
@@ -112,7 +152,7 @@ def _normalize_text(text: str) -> str:
     text = re.sub(r'\s+', ' ', text)         # 合并空白
     return text
 
-def compute_content_hash(activity: RawActivity) -> str:
+def compute_content_hash(activity: ProcessedActivity) -> str:
     title = _normalize_text(activity.title_en)
     start = activity.start_time_utc.isoformat()  # 使用 UTC 确保跨时区一致
     address = _normalize_text(activity.address or "")

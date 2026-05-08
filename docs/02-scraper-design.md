@@ -1,26 +1,38 @@
 # 多源活动爬虫设计
 
+## 核心设计：统一 LLM 提取
+
+**所有数据源使用同一套逻辑**：Playwright 负责页面导航和抓取原始 HTML，LLM 负责提取结构化数据 + 翻译 + 摘要。爬虫不需要为每个站点的页面结构写 CSS 选择器来提取数据。
+
+```
+列表页 → 找到详情页链接 → 抓取详情页原始 HTML → LLM 提取+翻译一步到位
+```
+
+**爬虫只做两件事**：
+1. **导航**: 列表页翻页、找到详情页链接（只需匹配 URL pattern，不需要精确选择器）
+2. **抓取**: 获取详情页的完整 HTML 和基本信息（URL、城市、来源）
+
+**LLM 做所有脏活**：从原始 HTML 中提取标题/时间/地点/费用 → 翻译为中文 → 生成摘要 → 分类
+
 ## 数据源概览
 
 | 数据源 | 网址 | 覆盖城市 | 爬取方式 | 优先级 |
 |--------|------|---------|---------|--------|
-| TodoCanada | todocanada.ca | 10+ 城市 | Playwright 抓取 | 一期 |
-| FamilyFunCanada | familyfuncanada.com | 主要城市 | WordPress REST API | 一期 |
-| DiscoverSaskatoon | discoversaskatoon.com | Saskatoon | Playwright 抓取 | 一期 |
-| Facebook Events | facebook.com/events | 全部 | Playwright（需登录） | 二期 |
+| TodoCanada | todocanada.ca | 10+ 城市 | Playwright 抓取 + LLM 提取 | 一期 |
+| FamilyFunCanada | familyfuncanada.com | 主要城市 | Playwright 抓取 + LLM 提取 | 一期 |
+| DiscoverSaskatoon | discoversaskatoon.com | Saskatoon | Playwright 抓取 + LLM 提取 | 一期 |
+| Facebook Events | facebook.com/events | 全部 | Playwright（需登录）+ LLM | 二期 |
 
 ## 技术栈
 
 | 工具 | 用途 |
 |------|------|
-| **Playwright** | 核心浏览器引擎，处理 JS 渲染页面、动态加载 |
-| **httpx** | 异步 HTTP 客户端，调用 REST API、下载图片 |
-| **Crawl4AI** | AI 友好提取层（可选，二期） |
-| **Jina Reader** | 轻量备用方案（简单页面） |
+| **Playwright** | 页面导航、JS 渲染、抓取原始 HTML |
+| **Kimi kimi-k2.6** | 从原始 HTML 提取结构化数据 + 翻译 + 摘要 |
+| **httpx** | 下载图片 |
 
 ```bash
-# 依赖
-pip install playwright httpx beautifulsoup4 lxml
+pip install playwright httpx
 playwright install chromium
 ```
 
@@ -43,24 +55,66 @@ CITIES = {
 
 ---
 
+## 统一爬虫基类
+
+```python
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import datetime
+
+
+@dataclass
+class RawPage:
+    """爬虫的输出 — 一个详情页的原始内容"""
+    source: str                    # 数据来源标识
+    source_url: str                # 详情页 URL
+    raw_html: str                  # 详情页完整 HTML
+    city_slug: str                 # 城市
+    image_url: str | None = None   # 页面主图（从 og:image 或 meta 提取）
+
+
+class BaseScraper(ABC):
+    """爬虫基类 — 只负责页面导航和抓取原始 HTML"""
+
+    @abstractmethod
+    async def fetch_pages(
+        self, city_slug: str, start_date: datetime, end_date: datetime
+    ) -> list[RawPage]:
+        ...
+
+    @property
+    def supported_cities(self) -> set[str]:
+        return set(CITIES.keys())
+
+    @staticmethod
+    async def _collect_links(page, url_pattern: str) -> list[str]:
+        """从列表页收集所有匹配 URL pattern 的链接"""
+        links = await page.eval_on_selector_all(
+            "a",
+            f"els => els.map(a => a.href).filter(h => h.match({url_pattern!r}))"
+        )
+        return list(set(links))  # 去重
+
+    @staticmethod
+    async def _get_og_image(page) -> str | None:
+        """提取页面 og:image"""
+        el = await page.query_selector('meta[property="og:image"]')
+        if el:
+            return await el.get_attribute("content")
+        return None
+```
+
+---
+
 ## 数据源 1: TodoCanada
 
 **网址**: `https://www.todocanada.ca/`
-**特点**: 服务端渲染，按城市列出活动，每月视图
-**爬取方式**: Playwright + CSS 选择器
+**特点**: 按城市列出活动，有详情页
 
 ### 页面结构
 
-活动列表页 URL 模式: `https://www.todocanada.ca/{city}/events/`
-
-每个活动条目包含:
-- 日期徽章（月/日）
-- 活动标题 + 链接
-- 场地地址
-- 日期文本描述
-- 电话
-- 价格（如 "Price: Free", "Price: $5"）
-- 截断的活动描述
+- 列表页: `https://www.todocanada.ca/{city}/events/`
+- 详情页: 点击活动标题进入，包含完整活动信息
 
 ### 城市路径映射
 
@@ -81,132 +135,66 @@ TODOCANADA_CITY_SLUGS = {
 
 ### 爬虫实现
 
-> **⚠️ 选择器未验证**: 以下代码中的 CSS 选择器为推测性选择器，实现前必须按 Spike 验证清单确认实际页面结构。
+> **Spike 待验证**: 列表页 URL pattern、详情页链接匹配规则、是否有分页。
 
 ```python
 class TodoCanadaScraper(BaseScraper):
-    """TodoCanada 活动爬虫 — Playwright"""
-
     BASE_URL = "https://www.todocanada.ca"
 
-    async def fetch_activities(
+    async def fetch_pages(
         self, city_slug: str, start_date: datetime, end_date: datetime
-    ) -> list[RawActivity]:
+    ) -> list[RawPage]:
         slug = TODOCANADA_CITY_SLUGS[city_slug]
-        url = f"{self.BASE_URL}/{slug}/events/"
+        list_url = f"{self.BASE_URL}/{slug}/events/"
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            await page.goto(url, wait_until="networkidle")
+            await page.goto(list_url, wait_until="networkidle")
 
-            # 获取活动列表
-            items = await page.query_selector_all("article, .event-item, .listing-item")
+            # 收集详情页链接（URL pattern spike 后确定）
+            detail_urls = await self._collect_links(page, r"todocanada\.ca/.+/event/")
 
-            activities = []
-            for item in items:
-                title_el = await item.query_selector("h2 a, h3 a, .event-title a")
-                if not title_el:
-                    continue
+            pages = []
+            for url in detail_urls:
+                detail_page = await browser.new_page()
+                await detail_page.goto(url, wait_until="networkidle")
+                html = await detail_page.content()
+                og_image = await self._get_og_image(detail_page)
+                await detail_page.close()
 
-                title = await title_el.inner_text()
-                detail_url = await title_el.get_attribute("href")
-
-                # 提取基本字段
-                address = await self._extract_text(item, ".address, .location, .venue")
-                price_text = await self._extract_text(item, ".price")
-                desc = await self._extract_text(item, ".description, .excerpt, p")
-
-                # 进入详情页获取完整信息
-                detail = await self._scrape_detail(page, detail_url)
-
-                activity = RawActivity(
+                pages.append(RawPage(
                     source="todocanada",
-                    source_id=self._extract_source_id(detail_url),
-                    source_url=detail_url,
-                    title_en=title.strip(),
-                    description_en=desc,
-                    html_en=detail.get("html", ""),
-                    start_time_local=detail.get("start_time", start_date),
-                    end_time_local=detail.get("end_time", end_date),
-                    address=address,
-                    latitude=detail.get("latitude"),
-                    longitude=detail.get("longitude"),
-                    image_url=detail.get("image_url"),
-                    is_free=self._parse_is_free(price_text),
-                    price=price_text,
-                    venue_name=detail.get("venue_name"),
+                    source_url=url,
+                    raw_html=html,
                     city_slug=city_slug,
-                    url=detail_url,
-                    category=detail.get("category"),
-                )
-                activities.append(activity)
+                    image_url=og_image,
+                ))
 
             await browser.close()
-        return activities
+        return pages
 ```
 
-### 注意事项
+### Spike 验证项
 
-- 列表页可能显示多个区域的活动（如 London 地区出现在 Toronto 页面），需按地址过滤
-- 部分活动没有详细时间信息，需进入详情页获取
-- 价格格式不统一（"Free", "$5", "$10-$20"），需灵活解析
+- [ ] 确认列表页 URL pattern（`/{city}/events/` 还是 `/city/{city}/events/`）
+- [ ] 确认详情页 URL pattern，用于 `_collect_links` 过滤
+- [ ] 确认是否有分页，如何翻页
 
 ---
 
 ## 数据源 2: FamilyFunCanada
 
 **网址**: `https://www.familyfuncanada.com/`
-**特点**: WordPress + "The Events Calendar" 插件
-**爬取方式**: REST API（JSON），无需浏览器
+**特点**: WordPress 博客，活动信息以城市指南/文章形式发布
 
-### REST API 端点
+### Spike 验证结果 (2026-05-07)
 
-```
-GET /{city}/wp-json/tribe/events/v1/events
-```
-
-**关键参数**:
-| 参数 | 说明 | 示例 |
-|------|------|------|
-| `start_date` | 开始日期 | `2026-05-07` |
-| `end_date` | 结束日期 | `2026-06-07` |
-| `per_page` | 每页数量 | 50 |
-| `page` | 页码 | 1 |
-
-**响应格式** (JSON):
-```json
-{
-    "events": [
-        {
-            "id": 12345,
-            "title": "Summer Music Festival",
-            "description": "<p>Full HTML description...</p>",
-            "url": "https://www.familyfuncanada.com/event/...",
-            "start_date": "2026-05-15",
-            "start_date_details": {"year": "2026", "month": "05", "day": "15", "hour": "10", "minutes": "00"},
-            "end_date": "2026-05-15",
-            "end_date_details": {"year": "2026", "month": "05", "day": "15", "hour": "18", "minutes": "00"},
-            "venue": {
-                "venue": "Central Park",
-                "address": "123 Main St",
-                "city": "Toronto",
-                "state": "ON",
-                "latitude": "43.6532",
-                "longitude": "-79.3832"
-            },
-            "image": {
-                "url": "https://...",
-                "full": "https://..."
-            },
-            "categories": [{"name": "Music"}],
-            "cost": "Free"
-        }
-    ],
-    "total": 100,
-    "total_pages": 2
-}
-```
+| 页面类型 | URL 示例 | 状态 | 说明 |
+|----------|----------|------|------|
+| 城市主页 | `/toronto/`、`/vancouver/`、`/saskatoon/` | ✅ 活跃 | 有 2026 年最新活动指南 |
+| Events 日历 | `/toronto/events/` | ❌ 废弃 | 停留在 2021 年 1 月 |
+| REST API | `/toronto/wp-json/tribe/events/v1/events` | ❌ 404 | 未注册 |
 
 ### 城市路径映射
 
@@ -219,6 +207,7 @@ FAMILYFUN_CITY_SLUGS = {
     "ottawa": "ottawa",
     "winnipeg": "winnipeg",
     "montreal": "montreal",
+    "saskatoon": "saskatoon",
 }
 ```
 
@@ -226,219 +215,127 @@ FAMILYFUN_CITY_SLUGS = {
 
 ```python
 class FamilyFunCanadaScraper(BaseScraper):
-    """FamilyFunCanada 活动爬虫 — WordPress REST API"""
-
     BASE_URL = "https://www.familyfuncanada.com"
 
-    async def fetch_activities(
+    async def fetch_pages(
         self, city_slug: str, start_date: datetime, end_date: datetime
-    ) -> list[RawActivity]:
+    ) -> list[RawPage]:
         slug = FAMILYFUN_CITY_SLUGS.get(city_slug)
         if not slug:
-            return []  # 该城市无覆盖
+            return []
 
-        activities = []
-        page = 1
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
 
-        while True:
-            url = f"{self.BASE_URL}/{slug}/wp-json/tribe/events/v1/events"
-            params = {
-                "start_date": start_date.strftime("%Y-%m-%d"),
-                "end_date": end_date.strftime("%Y-%m-%d"),
-                "per_page": 50,
-                "page": page,
-            }
+            # 收集城市主页上的文章链接
+            city_url = f"{self.BASE_URL}/{slug}/"
+            await page.goto(city_url, wait_until="networkidle")
+            article_urls = await self._collect_links(
+                page, r"familyfuncanada\.com/\d{4}/\d{2}/"
+            )
 
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url, params=params)
-                data = resp.json()
+            # 处理分页
+            for page_num in range(2, 4):  # 抓前 3 页
+                next_url = f"{self.BASE_URL}/{slug}/page/{page_num}/"
+                resp = await page.goto(next_url, wait_until="networkidle")
+                if resp.status == 404:
+                    break
+                more = await self._collect_links(
+                    page, r"familyfuncanada\.com/\d{4}/\d{2}/"
+                )
+                article_urls.extend(more)
 
-            for event in data.get("events", []):
-                activity = self._map_event(event, city_slug)
-                activities.append(activity)
+            pages = []
+            for url in set(article_urls):
+                detail_page = await browser.new_page()
+                await detail_page.goto(url, wait_until="networkidle")
+                html = await detail_page.content()
+                og_image = await self._get_og_image(detail_page)
+                await detail_page.close()
 
-            # 分页
-            if page >= data.get("total_pages", 1):
-                break
-            page += 1
+                pages.append(RawPage(
+                    source="familyfuncanada",
+                    source_url=url,
+                    raw_html=html,
+                    city_slug=city_slug,
+                    image_url=og_image,
+                ))
 
-        return activities
-
-    def _map_event(self, event: dict, city_slug: str) -> RawActivity:
-        venue = event.get("venue", {}) or {}
-        image = event.get("image", {}) or {}
-
-        return RawActivity(
-            source="familyfuncanada",
-            source_id=str(event["id"]),
-            source_url=event.get("url", ""),
-            title_en=event.get("title", ""),
-            description_en=self._strip_html(event.get("description", "")),
-            html_en=event.get("description", ""),
-            start_time_local=self._parse_datetime(event.get("start_date_details", {})),
-            end_time_local=self._parse_datetime(event.get("end_date_details", {})),
-            address=self._format_address(venue),
-            latitude=float(venue.get("latitude", 0)) or None,
-            longitude=float(venue.get("longitude", 0)) or None,
-            image_url=image.get("url") or image.get("full"),
-            is_free=(event.get("cost", "") or "").lower() in ("free", ""),
-            price=event.get("cost"),
-            venue_name=venue.get("venue"),
-            city_slug=city_slug,
-            url=event.get("url", ""),
-            category=self._extract_category(event),
-        )
+            await browser.close()
+        return pages
 ```
 
 ### 注意事项
 
-- 并非所有城市都有覆盖（只有主要城市）
-- API 可能返回旧数据，需检查日期过滤
-- 部分活动可能没有 venue 或 image 信息
+- 一篇文章可能包含多个活动（如"May Event Guide"），LLM 会处理这种情况
+- 部分文章是"指南"型（如"Where Kids Eat Free"），LLM 质量评估会过滤
 
 ---
 
 ## 数据源 3: DiscoverSaskatoon
 
 **网址**: `https://www.discoversaskatoon.com/calendar-events`
-**特点**: Drupal 10，卡片式布局，"Load More" 动态分页
-**爬取方式**: Playwright + CSS 选择器
+**特点**: Drupal 10，"Load More" 动态分页
 **覆盖**: 仅 Saskatoon
-
-### 页面结构
-
-**列表页**: `/calendar-events`
-- 卡片式活动列表
-- 每个卡片: 图片、标题、日期范围文本、"View Event" 链接
-- 支持按活动类型和地点过滤
-- "Load More" 按钮加载更多（动态分页）
-
-**详情页**: `/calendar-events/{event-slug}`
-- 活动标题
-- 完整描述（HTML）
-- 多个具体日期时间
-- 价格（如 "Starting at $65/person"）
-- 电话、网站 URL
-- 地址、地点名称
-- 图片
 
 ### 爬虫实现
 
-> **⚠️ 选择器未验证**: 以下代码中的 CSS 选择器为推测性选择器，实现前必须按 Spike 验证清单确认实际页面结构。
-
 ```python
 class DiscoverSaskatoonScraper(BaseScraper):
-    """DiscoverSaskatoon 活动爬虫 — Playwright"""
-
     BASE_URL = "https://www.discoversaskatoon.com"
     SUPPORTED_CITIES = {"saskatoon"}
 
-    async def fetch_activities(
+    async def fetch_pages(
         self, city_slug: str, start_date: datetime, end_date: datetime
-    ) -> list[RawActivity]:
+    ) -> list[RawPage]:
         if city_slug not in self.SUPPORTED_CITIES:
             return []
-
-        url = f"{self.BASE_URL}/calendar-events"
-        activities = []
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
-            await page.goto(url, wait_until="networkidle")
+            await page.goto(f"{self.BASE_URL}/calendar-events", wait_until="networkidle")
 
-            # 点击 "Load More" 直到全部加载
-            while True:
-                load_more = await page.query_selector(
-                    'button:has-text("Load More"), a:has-text("Load More")'
-                )
-                if not load_more:
+            # 点击 "Load More" 加载全部
+            for _ in range(10):  # 最多点 10 次
+                btn = await page.query_selector('button:has-text("Load More")')
+                if not btn:
                     break
-                await load_more.click()
+                await btn.click()
                 await page.wait_for_timeout(1000)
 
-            # 收集所有活动链接
-            cards = await page.query_selector_all(".event-card, .views-row, .card")
-            for card in cards:
-                link = await card.query_selector('a[href*="calendar-events"]')
-                if not link:
-                    continue
-                detail_url = await link.get_attribute("href")
-                if detail_url and detail_url.startswith("/"):
-                    detail_url = f"{self.BASE_URL}{detail_url}"
+            # 收集详情页链接
+            detail_urls = await self._collect_links(
+                page, r"discoversaskatoon\.com/calendar-events/.+"
+            )
 
-                detail = await self._scrape_detail_page(browser, detail_url)
-                if detail:
-                    activities.append(detail)
+            pages = []
+            for url in detail_urls:
+                detail_page = await browser.new_page()
+                await detail_page.goto(url, wait_until="networkidle")
+                html = await detail_page.content()
+                og_image = await self._get_og_image(detail_page)
+                await detail_page.close()
+
+                pages.append(RawPage(
+                    source="discoversaskatoon",
+                    source_url=url,
+                    raw_html=html,
+                    city_slug=city_slug,
+                    image_url=og_image,
+                ))
 
             await browser.close()
-        return activities
+        return pages
 ```
 
-### 注意事项
+### Spike 验证项
 
-- 仅覆盖 Saskatoon 一个城市
-- "Load More" 分页需要特殊处理
-- 日期格式可能是文本描述（如 "May 15 - May 17, 2026"），需解析
-- 详情页可能有多个日期场次
+- [ ] 确认详情页 URL pattern，用于链接过滤
+- [ ] 确认 "Load More" 按钮的选择器/行为
 
 ---
-
-## 统一爬虫基类
-
-```python
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import datetime
-
-
-@dataclass
-class RawActivity:
-    """统一的原始活动数据结构"""
-    source_id: str
-    source: str
-    title_en: str
-    source_url: str = ""
-    description_en: str = ""
-    html_en: str = ""
-    start_time_local: datetime = None   # 城市本地时间（naive datetime）
-    end_time_local: datetime = None     # 城市本地时间（naive datetime）
-    timezone: str = ""                  # IANA 时区（如 America/Toronto）
-    start_time_utc: datetime = None     # UTC 时间（由转换函数填充）
-    end_time_utc: datetime = None       # UTC 时间（由转换函数填充）
-    address: str = ""
-    latitude: float | None = None
-    longitude: float | None = None
-    image_url: str | None = None
-    image_urls: list[str] = field(default_factory=list)
-    is_free: bool = True
-    price: str | None = None
-    venue_name: str | None = None
-    city_slug: str = ""
-    url: str = ""
-    category: str | None = None
-
-
-class BaseScraper(ABC):
-    """爬虫基类"""
-
-    @abstractmethod
-    async def fetch_activities(
-        self, city_slug: str, start_date: datetime, end_date: datetime
-    ) -> list[RawActivity]:
-        ...
-
-    @property
-    def supported_cities(self) -> set[str]:
-        """返回该爬虫支持的城市集合"""
-        return set(CITIES.keys())
-
-    @staticmethod
-    def _strip_html(html: str) -> str:
-        """移除 HTML 标签"""
-        from bs4 import BeautifulSoup
-        return BeautifulSoup(html, "lxml").get_text(separator=" ", strip=True)
-```
 
 ## 爬虫注册 & 调度
 
@@ -450,79 +347,88 @@ SCRAPERS: dict[str, type[BaseScraper]] = {
 }
 
 
-async def fetch_all_activities(
+async def fetch_all_pages(
     city_slug: str, start_date: datetime, end_date: datetime
-) -> list[RawActivity]:
-    """从所有数据源抓取活动"""
-    all_activities = []
+) -> list[RawPage]:
+    """从所有数据源抓取原始页面"""
+    all_pages = []
 
     for name, scraper_cls in SCRAPERS.items():
         scraper = scraper_cls()
         if city_slug not in scraper.supported_cities:
             continue
         try:
-            activities = await scraper.fetch_activities(city_slug, start_date, end_date)
-            all_activities.extend(activities)
+            pages = await scraper.fetch_pages(city_slug, start_date, end_date)
+            all_pages.extend(pages)
         except Exception as e:
             logger.error(f"Scraper {name} failed for {city_slug}: {e}")
 
-    return all_activities
+    return all_pages
 ```
 
-## 抓取后处理：时间 enrich
-
-爬虫只填充 `start_time_local` / `end_time_local` / `timezone`。必须在抓取完成后、写入数据库前，统一调用 `local_to_utc` 填充 UTC 字段，否则后续去重（依赖 `start_time_utc`）会因字段为空而报错。
+## 主流程
 
 ```python
-from zoneinfo import ZoneInfo
-from datetime import datetime, timezone as tz
+async def process_city(city_slug: str, start_date: datetime, end_date: datetime):
+    # 1. 爬虫抓取原始页面
+    raw_pages = await fetch_all_pages(city_slug, start_date, end_date)
 
-CITY_TIMEZONES = {
-    "toronto":    "America/Toronto",
-    "vancouver":  "America/Vancouver",
-    "montreal":   "America/Toronto",
-    "calgary":    "America/Edmonton",
-    "edmonton":   "America/Edmonton",
-    "ottawa":     "America/Toronto",
-    "winnipeg":   "America/Winnipeg",
-    "saskatoon":  "America/Regina",
-    "regina":     "America/Regina",
-    "moncton":    "America/Moncton",
-}
+    for page in raw_pages:
+        # 2. 页面缓存：内容未变化且上次成功则跳过
+        html_hash = compute_html_hash(page.raw_html)
+        cached = await db.get_processed_page(page.source, page.source_url)
+        if cached and cached["html_hash"] == html_hash and cached["status"] in ("success", "empty"):
+            continue
 
-def enrich_time_fields(activity: RawActivity) -> None:
-    """抓取后立即调用：填充 timezone 和 start_time_utc / end_time_utc。"""
-    tz_name = CITY_TIMEZONES.get(activity.city_slug)
-    if not tz_name:
-        logger.warning(f"Unknown timezone for city: {activity.city_slug}")
-        return
-    activity.timezone = tz_name
-    zone = ZoneInfo(tz_name)
-    for local_attr, utc_attr in [
-        ("start_time_local", "start_time_utc"),
-        ("end_time_local", "end_time_utc"),
-    ]:
-        local_dt = getattr(activity, local_attr)
-        if local_dt:
-            aware = local_dt.replace(tzinfo=zone)
-            utc_dt = aware.astimezone(tz.utc).replace(tzinfo=None)
-            setattr(activity, utc_attr, utc_dt)
+        # 3. LLM 提取 + 翻译 + 摘要（一页可产出多个活动）
+        try:
+            activities = await ai_engine.process(page)
+        except Exception as e:
+            await db.save_processed_page(page.source, page.source_url, html_hash, "failed")
+            logger.error(f"LLM processing failed for {page.source_url}: {e}")
+            continue
 
-async def fetch_all_activities(
-    city_slug: str, start_date: datetime, end_date: datetime
-) -> list[RawActivity]:
-    all_activities = []
-    for name, scraper_cls in SCRAPERS.items():
-        # ... 抓取逻辑同上 ...
-        for act in activities:
-            enrich_time_fields(act)   # ← 立即填充 UTC 字段
-            all_activities.append(act)
-    return all_activities
+        for activity in activities:
+            # 4. 跳过无开始时间的活动
+            if not activity.start_time_utc:
+                continue
+
+            # 5. 跳过超出目标日期范围的活动
+            if activity.start_time_utc > end_date:
+                continue
+
+            # 6. 事件级精确去重（source + source_id，UNIQUE 约束兜底）
+            if await db.exists(source=activity.source, source_id=activity.source_id):
+                continue
+
+            # 7. 内容去重（标题+时间+地址 hash）
+            activity.content_hash = compute_content_hash(activity)
+            if await db.exists_content_hash(activity.city_slug, activity.content_hash):
+                continue
+
+            # 8. HTML 安全清理
+            activity.html_zh = sanitize_html(activity.html_zh, page.source_url)
+
+            # 9. 存储 + 发布
+            await db.save(activity)
+            try:
+                await publisher.publish(activity)
+            except Exception as e:
+                logger.error(f"Publish failed for {activity.source_id}: {e}")
+                await db.mark_publish_failed(activity.source, activity.source_id, str(e))
+                continue
+
+        # 记录页面处理状态
+        await db.save_processed_page(
+            page.source, page.source_url, html_hash,
+            "success" if activities else "empty",
+            activity_count=len(activities),
+        )
 ```
 
 ## 图片处理
 
-一期先用原始 URL，平台 `img` 字段支持外部 URL。后续可上传到腾讯云 COS。
+一期先用原始 URL 或 `og:image`，平台 `img` 字段支持外部 URL。后续可上传到腾讯云 COS。
 
 ## 调度策略
 
@@ -530,43 +436,47 @@ async def fetch_all_activities(
 - **范围**: 未来 30 天活动
 - **城市**: 遍历所有 10 个城市
 - **并行**: 不同城市的抓取可并行执行
-- **去重**: 通过数据库 `UNIQUE(source, source_id)` 约束避免重复处理
+- **去重**: 页面缓存（processed_pages + html_hash）+ 事件级 source_id 精确去重 + content_hash 内容去重
 
 ---
 
-## 实现前 Spike 验证清单
+## Eventbrite 调查结论 — ❌ 不可用
 
-> **警告**: 上方代码中的 CSS 选择器（如 `article, .event-item, .listing-item`、`.event-card, .views-row, .card`）均为推测性选择器，**尚未在真实页面上验证**。在正式实现爬虫前，必须对每个数据源完成以下 spike 验证。
+**Eventbrite API 不能作为数据源**：
 
-### 每个数据源必须完成的验证
+- **Public Event Search API 已关闭**: `/v3/events/search/` 端点于 2019 年 12 月关闭
+- **仅剩 Organization/User Events API**: 只能查询自己组织的活动
+- **验证结果** (2026-05-07):
+  - `GET /v3/events/search/?location.address=Toronto` — **404 NOT_FOUND**
 
-| 检查项 | 说明 | 通过标准 |
-|--------|------|---------|
-| 页面采样 | 手动访问 3-5 个城市的列表页和详情页，确认页面结构 | 页面可正常访问，结构一致 |
-| 选择器验证 | 用浏览器 DevTools 确认实际 CSS 选择器 | 选择器能准确定位所有活动条目 |
-| robots.txt | 检查 `/{source}/robots.txt` | 确认爬取行为合规或确认对非登录用户无限制 |
-| 反爬机制 | 测试连续请求 5-10 次，检查是否被封 IP 或出现验证码 | 无反爬限制，或可通过合理延迟绕过 |
-| 数据完整性 | 确认能获取到：标题、时间、地址、描述、图片 | 至少 80% 的活动能提取完整信息 |
-| 时间格式 | 确认列表页/详情页的时间格式和时区 | 能准确解析为本地 naive datetime |
+---
+
+## Spike 验证清单
+
+由于数据提取完全由 LLM 处理，Spike 验证大幅简化。只需确认**页面导航**相关的问题：
+
+### 通用验证（每个数据源）
+
+| 检查项 | 说明 |
+|--------|------|
+| 列表页可访问 | 确认列表页 URL pattern 正确 |
+| 详情页链接收集 | 确认 URL pattern 能过滤出正确的详情页链接 |
+| 反爬测试 | 连续请求 5-10 次，检查是否被封 |
+| 分页/动态加载 | 确认翻页或 "Load More" 的行为 |
 
 ### 各源 Spike 优先级
 
-1. **FamilyFunCanada** — 优先级最高，REST API 返回结构化 JSON，无需猜测选择器，最稳定可靠
-2. **DiscoverSaskatoon** — 仅覆盖 Saskatoon，页面结构相对简单，但需验证 "Load More" 和详情页选择器
-3. **TodoCanada** — 最复杂，多城市页面结构可能有差异，需逐城市采样
+1. **TodoCanada** — 覆盖最广，优先验证 URL pattern 和分页
+2. **DiscoverSaskatoon** — 验证 "Load More" 行为和详情页 URL
+3. **FamilyFunCanada** — 验证文章链接 pattern 和分页
 
 ### 反爬策略
 
 ```python
-# 通用反爬对策（Playwright 爬虫）
 PLAYWRIGHT_CONFIG = {
     "headless": True,
-    "request_delay": (2, 5),       # 每次请求间隔 2-5 秒（随机）
-    "page_timeout": 30000,          # 页面加载超时 30s
-    "user_agent_rotation": True,    # 随机 User-Agent
-    "max_retries": 3,               # 失败重试次数
-    "retry_delay": 10,              # 重试间隔
+    "request_delay": (2, 5),
+    "page_timeout": 30000,
+    "max_retries": 3,
 }
 ```
-
-如果 spike 发现某数据源反爬严重或页面结构频繁变化，应降低该源优先级或改用其他数据源替代。

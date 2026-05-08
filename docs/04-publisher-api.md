@@ -76,6 +76,16 @@ class WoohelpsPublisher:
     def __init__(self, base_url: str, login_session: str):
         self.base_url = base_url
         self.login_session = login_session
+        self.client = httpx.AsyncClient(timeout=30.0)
+
+    async def close(self):
+        await self.client.aclose()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        await self.close()
 
     async def publish_activity(self, activity: ProcessedActivity) -> dict:
         """发布活动到海外新生活平台"""
