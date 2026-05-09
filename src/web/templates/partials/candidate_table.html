@@ -1,0 +1,165 @@
+<!-- 操作栏 -->
+<div class="flex gap-3 mb-4">
+    <form action="/candidates/fetch-details" method="post" class="flex gap-2 items-center">
+        <input type="hidden" name="city" value="{{ current_city }}">
+        <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700">
+            抓取选中详情
+        </button>
+        <span class="text-xs text-gray-500">只对 "已选中" 且未抓详情的活动执行</span>
+    </form>
+</div>
+
+<div class="bg-white rounded-lg border">
+    <div class="px-4 py-3 border-b text-sm text-gray-500">
+        共 {{ total }} 条
+        {% if total_pages > 1 %}
+        <span class="ml-4">第 {{ current_page }} / {{ total_pages }} 页</span>
+        {% endif %}
+    </div>
+
+    {% if candidates %}
+    <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-gray-500 text-xs">
+            <tr>
+                <th class="px-3 py-2 text-left w-10"><input type="checkbox" id="select-all" onclick="document.querySelectorAll('.candidate-cb').forEach(cb => cb.checked = this.checked); updateCandCount()"></th>
+                <th class="px-3 py-2 text-left" style="width:25%">标题</th>
+                <th class="px-3 py-2 text-left" style="width:30%">描述</th>
+                <th class="px-3 py-2 text-left w-28">日期</th>
+                <th class="px-3 py-2 text-left w-24">价格</th>
+                <th class="px-3 py-2 text-left w-20">AI 判断</th>
+                <th class="px-3 py-2 text-left w-20">状态</th>
+                <th class="px-3 py-2 text-left w-28">操作</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for c in candidates %}
+        <tr class="border-t hover:bg-gray-50 align-top">
+            <td class="px-3 py-2">
+                <input type="checkbox" value="{{ c.id }}" class="candidate-cb rounded border-gray-300" onchange="updateCandCount()">
+            </td>
+            <td class="px-3 py-2">
+                {% if c.title_zh %}
+                <div class="font-medium text-gray-800">{{ c.title_zh }}</div>
+                <div class="text-xs text-gray-400 mt-0.5">{{ c.title }}</div>
+                {% else %}
+                <div class="font-medium text-gray-800">{{ c.title or "(无标题)" }}</div>
+                {% endif %}
+                <div class="text-xs text-gray-400 mt-0.5">{{ c.source }} | {{ c.city_slug }}</div>
+            </td>
+            <td class="px-3 py-2 text-gray-600">
+                {% if c.description_zh %}
+                <div class="text-gray-700">{{ c.description_zh }}</div>
+                <div class="text-xs text-gray-400 mt-0.5">{{ c.description }}</div>
+                {% elif c.description %}
+                <div class="text-gray-700">{{ c.description }}</div>
+                {% else %}
+                <span class="text-gray-400">-</span>
+                {% endif %}
+            </td>
+            <td class="px-3 py-2 text-gray-600">{{ c.event_date or "-" }}</td>
+            <td class="px-3 py-2 text-gray-600">{{ c.price or "-" }}</td>
+            <td class="px-3 py-2">
+                {% if c.ai_worth_fetching == 1 %}
+                <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">值得</span>
+                {% elif c.ai_worth_fetching == 0 %}
+                <span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">不值得</span>
+                {% else %}
+                <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">未判断</span>
+                {% endif %}
+                {% if c.ai_reason %}
+                <div class="text-xs text-gray-400 mt-1">{{ c.ai_reason }}</div>
+                {% endif %}
+            </td>
+            <td class="px-3 py-2">
+                {% if c.human_status == "pending" %}
+                <span class="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">待处理</span>
+                {% elif c.human_status == "selected" %}
+                <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">已选中</span>
+                {% elif c.human_status == "rejected" %}
+                <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">已拒绝</span>
+                {% endif %}
+                {% if c.fetched_detail %}
+                <span class="text-xs text-green-600 ml-1">已抓详情</span>
+                {% endif %}
+            </td>
+            <td class="px-3 py-2">
+                <div class="flex gap-1 flex-wrap">
+                    <form action="/candidates/select" method="post" class="inline">
+                        <input type="hidden" name="candidate_ids" value="{{ c.id }}">
+                        <button type="submit" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">选中</button>
+                    </form>
+                    <form action="/candidates/reject" method="post" class="inline">
+                        <input type="hidden" name="candidate_ids" value="{{ c.id }}">
+                        <button type="submit" class="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100">拒绝</button>
+                    </form>
+                    <form action="/candidates/delete" method="post" class="inline" onsubmit="return confirm('确定删除？')">
+                        <input type="hidden" name="candidate_ids" value="{{ c.id }}">
+                        <button type="submit" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">删除</button>
+                    </form>
+                    <a href="{{ c.source_url }}" target="_blank" class="text-xs text-gray-400 hover:text-gray-600">查看</a>
+                </div>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    {% if total_pages > 1 %}
+    <div class="px-4 py-3 border-t flex gap-2 text-sm">
+        {% for p in range(1, total_pages + 1) %}
+            {% if p == current_page %}
+            <span class="px-3 py-1 bg-blue-600 text-white rounded">{{ p }}</span>
+            {% else %}
+            <a hx-get="/candidates/table?city={{ current_city }}&ai_worth={{ current_ai_worth }}&status={{ current_status }}&page={{ p }}"
+               hx-target="#candidate-table" hx-swap="innerHTML"
+               class="px-3 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 cursor-pointer">{{ p }}</a>
+            {% endif %}
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- 批量操作 -->
+    <div class="px-4 py-3 border-t bg-gray-50 flex gap-3 items-center">
+        <span class="text-sm text-gray-500" id="cand-selected-count">已选 0 个</span>
+        <button onclick="candBatchAction('/candidates/select')" class="bg-blue-600 text-white px-4 py-1.5 rounded text-sm hover:bg-blue-700">批量选中</button>
+        <button onclick="candBatchAction('/candidates/reject')" class="bg-gray-500 text-white px-4 py-1.5 rounded text-sm hover:bg-gray-600">批量拒绝</button>
+        <button onclick="candBatchDelete()" class="bg-red-600 text-white px-4 py-1.5 rounded text-sm hover:bg-red-700">批量删除</button>
+    </div>
+
+    <script>
+    function getCheckedIds() {
+        return Array.from(document.querySelectorAll('.candidate-cb:checked')).map(cb => cb.value);
+    }
+    function updateCandCount() {
+        const n = getCheckedIds().length;
+        const el = document.getElementById('cand-selected-count');
+        if (el) el.textContent = '已选 ' + n + ' 个';
+    }
+    function candBatchAction(url) {
+        const ids = getCheckedIds();
+        if (!ids.length) return;
+        const form = document.createElement('form');
+        form.method = 'post';
+        form.action = url;
+        ids.forEach(id => {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'candidate_ids';
+            input.value = id;
+            form.appendChild(input);
+        });
+        document.body.appendChild(form);
+        form.submit();
+    }
+    function candBatchDelete() {
+        const ids = getCheckedIds();
+        if (!ids.length) return;
+        if (!confirm('确定删除选中的 ' + ids.length + ' 条活动？')) return;
+        candBatchAction('/candidates/delete');
+    }
+    </script>
+
+    {% else %}
+    <div class="px-4 py-8 text-center text-gray-400">暂无候选活动</div>
+    {% endif %}
+</div>

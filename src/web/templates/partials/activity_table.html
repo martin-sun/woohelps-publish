@@ -1,0 +1,127 @@
+{% set ns = namespace(checked=[]) %}
+<table class="w-full text-sm bg-white rounded-lg border">
+    <thead class="bg-gray-50 text-gray-500 text-xs">
+        <tr>
+            <th class="px-3 py-2 w-8">
+                <input type="checkbox" id="select-all" onchange="toggleAll(this)"
+                       class="rounded border-gray-300">
+            </th>
+            <th class="px-3 py-2 text-left w-16">图片</th>
+            <th class="px-3 py-2 text-left">标题</th>
+            <th class="px-3 py-2 text-left">城市</th>
+            <th class="px-3 py-2 text-left">来源</th>
+            <th class="px-3 py-2 text-left">活动时间</th>
+            <th class="px-3 py-2 text-left">状态</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for act in activities %}
+        <tr class="border-t hover:bg-gray-50">
+            <td class="px-3 py-2">
+                <input type="checkbox" value="{{ act.id }}"
+                       class="activity-cb rounded border-gray-300">
+            </td>
+            <td class="px-3 py-2">
+                {% if act.image_url %}
+                <img src="{{ act.image_url }}" class="w-12 h-12 object-cover rounded" loading="lazy">
+                {% else %}
+                <div class="w-12 h-12 bg-gray-100 rounded flex items-center justify-center text-gray-300 text-xs">N/A</div>
+                {% endif %}
+            </td>
+            <td class="px-3 py-2">
+                <a href="/activity/{{ act.id }}" class="text-blue-600 hover:underline font-medium">{{ act.title_zh }}</a>
+                <div class="text-xs text-gray-400 truncate max-w-xs">{{ act.title_en }}</div>
+            </td>
+            <td class="px-3 py-2 text-xs">{{ act.city_slug }}</td>
+            <td class="px-3 py-2 text-xs">{{ act.source }}</td>
+            <td class="px-3 py-2 text-xs">
+                {{ local_time(act.start_time, act.timezone) }}
+            </td>
+            <td class="px-3 py-2">
+                {% if act.status == 'pending' %}
+                <span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">待发布</span>
+                {% elif act.status == 'published' %}
+                <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">已发布</span>
+                {% elif act.status == 'failed' %}
+                <span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">失败</span>
+                {% else %}
+                <span class="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded">跳过</span>
+                {% endif %}
+            </td>
+        </tr>
+    {% endfor %}
+    {% if not activities %}
+    <tr><td colspan="7" class="px-4 py-8 text-center text-gray-400">暂无活动</td></tr>
+    {% endif %}
+    </tbody>
+</table>
+
+<div class="flex items-center justify-between mt-3 px-1">
+    <div class="flex items-center gap-3">
+        <span id="selected-count" class="text-sm text-gray-500">已选 0 个</span>
+        <button onclick="actBatchAction('/activities/publish')" id="publish-btn" disabled
+                class="bg-green-600 text-white px-3 py-1.5 rounded text-sm hover:bg-green-700 disabled:opacity-50">
+            发布选中活动
+        </button>
+        <button onclick="actBatchDelete()" id="delete-btn" disabled
+                class="bg-red-600 text-white px-3 py-1.5 rounded text-sm hover:bg-red-700 disabled:opacity-50">
+            删除选中活动
+        </button>
+    </div>
+    {% if total_pages > 1 %}
+    <div class="flex gap-1 text-sm">
+        {% if current_page > 1 %}
+        <button type="button" class="px-3 py-1 border rounded hover:bg-gray-100"
+                hx-get="/activities/table?city={{ current_city }}&status={{ current_status }}&source={{ current_source }}&page={{ current_page - 1 }}"
+                hx-target="#activity-table" hx-swap="innerHTML">上一页</button>
+        {% endif %}
+        <span class="px-3 py-1 text-gray-500">{{ current_page }} / {{ total_pages }}</span>
+        {% if current_page < total_pages %}
+        <button type="button" class="px-3 py-1 border rounded hover:bg-gray-100"
+                hx-get="/activities/table?city={{ current_city }}&status={{ current_status }}&source={{ current_source }}&page={{ current_page + 1 }}"
+                hx-target="#activity-table" hx-swap="innerHTML">下一页</button>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+
+<script>
+function toggleAll(el) {
+    document.querySelectorAll('.activity-cb').forEach(cb => cb.checked = el.checked);
+    updateActCount();
+}
+function getCheckedActIds() {
+    return Array.from(document.querySelectorAll('.activity-cb:checked')).map(cb => cb.value);
+}
+function updateActCount() {
+    const n = getCheckedActIds().length;
+    document.getElementById('selected-count').textContent = '已选 ' + n + ' 个';
+    document.getElementById('publish-btn').disabled = n === 0;
+    document.getElementById('delete-btn').disabled = n === 0;
+}
+function actBatchAction(url) {
+    const ids = getCheckedActIds();
+    if (!ids.length) return;
+    const form = document.createElement('form');
+    form.method = 'post';
+    form.action = url;
+    ids.forEach(id => {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'activity_ids';
+        input.value = id;
+        form.appendChild(input);
+    });
+    document.body.appendChild(form);
+    form.submit();
+}
+function actBatchDelete() {
+    const ids = getCheckedActIds();
+    if (!ids.length) return;
+    if (!confirm('确定删除选中的 ' + ids.length + ' 条活动？')) return;
+    actBatchAction('/activities/delete');
+}
+document.addEventListener('change', function(e) {
+    if (e.target.classList.contains('activity-cb')) updateActCount();
+});
+</script>

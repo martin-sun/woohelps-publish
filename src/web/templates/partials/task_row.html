@@ -1,0 +1,27 @@
+<tr class="border-t hover:bg-gray-50"
+    {% if task.status == 'running' %}
+    hx-get="/scrape/task/{{ task.id }}/status" hx-trigger="every 5s" hx-swap="outerHTML"
+    {% endif %}>
+    <td class="px-4 py-2">{{ task.id }}</td>
+    <td class="px-4 py-2 text-xs">{{ task.city_slugs }}</td>
+    <td class="px-4 py-2">
+        {% if task.status == 'running' %}
+        <span class="text-blue-600">
+            运行中{% if task.current_city %} ({{ task.current_city }}){% endif %}
+        </span>
+        {% elif task.status == 'completed' %}
+        <span class="text-green-600">完成</span>
+        {% else %}
+        <span class="text-red-600">失败</span>
+        {% endif %}
+    </td>
+    <td class="px-4 py-2">{{ task.current_city or '-' }}</td>
+    <td class="px-4 py-2 text-xs text-gray-500">{{ task.started_at }}</td>
+    <td class="px-4 py-2">
+        {% if task.status != 'running' %}
+        <form action="/tasks/delete/{{ task.id }}" method="post" class="inline">
+            <button type="submit" class="text-xs text-red-500 hover:underline" onclick="return confirm('删除此任务记录？')">删除</button>
+        </form>
+        {% endif %}
+    </td>
+</tr>

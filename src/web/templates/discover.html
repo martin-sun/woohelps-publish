@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}发现新活动 - 加拿大活动管理{% endblock %}
+
+{% block content %}
+<h1 class="text-xl font-bold text-gray-800 mb-4">发现新活动（只抓列表页）</h1>
+
+<form hx-post="/discover/start" hx-target="body" hx-swap="innerHTML" class="bg-white rounded-lg border p-6 mb-8">
+    <div class="mb-4">
+        <label class="block text-sm font-semibold text-gray-700 mb-2">选择城市</label>
+        <div class="flex gap-2 mb-2">
+            <button type="button" onclick="document.querySelectorAll('.city-cb').forEach(cb => cb.checked = true)"
+                    class="text-xs text-blue-600 hover:underline">全选</button>
+            <button type="button" onclick="document.querySelectorAll('.city-cb').forEach(cb => cb.checked = false)"
+                    class="text-xs text-blue-600 hover:underline">取消全选</button>
+        </div>
+        <div class="flex flex-wrap gap-3">
+        {% for slug, info in cities.items() %}
+            <label class="flex items-center gap-1.5 text-sm">
+                <input type="checkbox" name="city_slugs" value="{{ slug }}" class="city-cb rounded border-gray-300">
+                {{ info.eng_name }}
+            </label>
+        {% endfor %}
+        </div>
+    </div>
+
+    <div class="flex gap-4 mb-4">
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">开始日期</label>
+            <input type="date" name="start_date" class="border rounded px-3 py-1.5 text-sm" value="{{ '' }}">
+        </div>
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">结束日期</label>
+            <input type="date" name="end_date" class="border rounded px-3 py-1.5 text-sm" value="{{ '' }}">
+        </div>
+    </div>
+
+    <button type="submit" class="bg-green-600 text-white px-6 py-2 rounded text-sm hover:bg-green-700">开始发现</button>
+</form>
+
+<div class="bg-white rounded-lg border">
+    <div class="px-4 py-3 border-b flex items-center justify-between">
+        <span class="font-semibold text-gray-700">发现任务历史</span>
+        {% if tasks %}
+        <form action="/tasks/clear" method="post" class="inline">
+            <button type="submit" class="text-xs text-red-600 hover:underline" onclick="return confirm('确定清空所有任务记录？')">清空全部</button>
+        </form>
+        {% endif %}
+    </div>
+    {% if tasks %}
+    <table class="w-full text-sm">
+        <thead class="bg-gray-50 text-gray-500 text-xs">
+            <tr>
+                <th class="px-4 py-2 text-left">ID</th>
+                <th class="px-4 py-2 text-left">城市</th>
+                <th class="px-4 py-2 text-left">状态</th>
+                <th class="px-4 py-2 text-left">当前城市</th>
+                <th class="px-4 py-2 text-left">开始时间</th>
+                <th class="px-4 py-2 text-left w-16">操作</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for task in tasks %}
+            {% include "partials/task_row.html" %}
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="px-4 py-8 text-center text-gray-400">暂无发现任务</div>
+    {% endif %}
+</div>
+{% endblock %}

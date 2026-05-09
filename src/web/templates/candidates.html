@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}候选活动 - 加拿大活动管理{% endblock %}
+
+{% block content %}
+<h1 class="text-xl font-bold text-gray-800 mb-4">候选活动（列表页抓取结果）</h1>
+
+<!-- 筛选栏 -->
+<div class="bg-white rounded-lg border p-4 mb-4">
+    <form hx-get="/candidates/table" hx-target="#candidate-table" hx-swap="innerHTML" class="flex flex-wrap gap-4 items-end">
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">城市</label>
+            <select name="city" class="border rounded px-3 py-1.5 text-sm">
+                <option value="" {% if not current_city %}selected{% endif %}>全部</option>
+                {% for slug, info in cities.items() %}
+                <option value="{{ slug }}" {% if current_city == slug %}selected{% endif %}>{{ info.eng_name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">AI 判断</label>
+            <select name="ai_worth" class="border rounded px-3 py-1.5 text-sm">
+                <option value="" {% if current_ai_worth == "" %}selected{% endif %}>全部</option>
+                <option value="1" {% if current_ai_worth == "1" %}selected{% endif %}>值得抓</option>
+                <option value="0" {% if current_ai_worth == "0" %}selected{% endif %}>不值得</option>
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">人工状态</label>
+            <select name="status" class="border rounded px-3 py-1.5 text-sm">
+                <option value="" {% if not current_status %}selected{% endif %}>全部</option>
+                <option value="pending" {% if current_status == "pending" %}selected{% endif %}>待处理</option>
+                <option value="selected" {% if current_status == "selected" %}selected{% endif %}>已选中</option>
+                <option value="rejected" {% if current_status == "rejected" %}selected{% endif %}>已拒绝</option>
+            </select>
+        </div>
+        <button type="submit" class="bg-gray-100 text-gray-700 px-4 py-1.5 rounded text-sm hover:bg-gray-200">筛选</button>
+    </form>
+</div>
+
+<!-- 候选表格（操作栏在 partial 内，随 HTMX 交换一起更新 city） -->
+<div id="candidate-table">
+    {% include "partials/candidate_table.html" %}
+</div>
+{% endblock %}

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}加拿大活动管理{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <nav class="bg-white border-b">
+        <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+            <a href="/" class="font-bold text-lg text-gray-800">加拿大活动管理</a>
+            <div class="flex gap-6 text-sm">
+                <a href="/" class="text-gray-600 hover:text-gray-900">Dashboard</a>
+                <a href="/candidates" class="text-gray-600 hover:text-gray-900">候选活动</a>
+                <a href="/activities" class="text-gray-600 hover:text-gray-900">活动列表</a>
+                <a href="/discover" class="text-gray-600 hover:text-gray-900">发现</a>
+                <a href="/scrape" class="text-gray-600 hover:text-gray-900">抓取</a>
+            </div>
+        </div>
+    </nav>
+    <main class="max-w-7xl mx-auto px-4 py-6">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>
