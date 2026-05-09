@@ -91,23 +91,69 @@ LOG_LEVEL=INFO
 
 > **注意**：当前 Step 9 的 `process_city()` 包含自动发布逻辑（main.py:90-102）。Step 10.1 将拆分此函数并移除自动发布。
 
-### Step 10: 管理界面 (`src/web/`)
+### Step 10: 管理界面一期 (`src/web/`)
 
 > 详细设计见 [07-admin-ui-design.md](./07-admin-ui-design.md)
 
-- [ ] 10.1 拆分 `process_city()` 为 `scrape_city()` + `publish_one()`，移除自动发布逻辑
-- [ ] 10.2 新增 DB 查询方法：`list_activities`、`get_activity`、`count_by_city_and_status`、`get_activities_by_ids`
-- [ ] 10.3 新增 `scrape_tasks` 表 + CRUD
-- [ ] 10.4 FastAPI 应用 + Jinja2 模板（base/dashboard/activities/detail/scrape）
-- [ ] 10.5 HTMX 交互：筛选、批量选择、批量发布、任务状态轮询
-- [ ] 10.6 抓取后台执行（`asyncio.create_task`）+ 进度更新
-- [ ] 10.7 新增依赖：fastapi、uvicorn、jinja2、python-multipart
-- [ ] 10.8 访问控制：localhost 绑定 + 可选 Basic Auth（`ADMIN_PASSWORD` 环境变量）
+- [x] 10.1 拆分 `process_city()` 为 `scrape_city()` + `publish_one()`，移除自动发布逻辑
+- [x] 10.2 新增 DB 查询方法：`list_activities`、`get_activity`、`count_by_city_and_status`、`get_activities_by_ids`
+- [x] 10.3 新增 `scrape_tasks` 表 + CRUD
+- [x] 10.4 FastAPI 应用 + Jinja2 模板（base/dashboard/activities/detail/scrape）
+- [x] 10.5 HTMX 交互：筛选、批量选择、批量发布、任务状态轮询
+- [x] 10.6 抓取后台执行（`asyncio.create_task`）+ 进度更新
+- [x] 10.7 新增依赖：fastapi、uvicorn、jinja2、python-multipart
+- [x] 10.8 访问控制：localhost 绑定 + 可选 Basic Auth（`ADMIN_PASSWORD` 环境变量）
 
-### Step 11: 测试 & 验证
+### Step 11: 二期 — 列表页 AI 预过滤 + 人工筛选
+
+> 目标：将人工审核节点从"发布前"前移到"抓详情前"，减少不必要的详情页抓取
+
+#### 11.1 数据库：新增 `candidate_activities` 表
+- [x] 建表 SQL（含索引）
+- [x] `save_candidates()` — 批量保存/更新
+- [x] `list_candidates()` / `count_candidates()` — 分页查询+筛选
+- [x] `update_candidate_status()` — 批量更新人工状态
+- [x] `mark_candidate_fetched()` — 标记已抓详情
+- [x] `get_candidates_to_fetch()` — 获取待抓详情的选中候选
+- [x] `count_candidates_by_city()` — Dashboard 统计用
+
+#### 11.2 爬虫：拆分 `discover_pages()` 和 `fetch_pages()`
+- [x] `TodoCanadaScraper.discover_pages()` — 只翻列表页，提取摘要
+- [x] `TodoCanadaScraper.fetch_pages()` — 调用 discover + AI过滤 + 抓详情
+- [x] `FamilyFunCanadaScraper.discover_pages()` — 只收集文章 URL
+- [x] `DiscoverSaskatoonScraper.discover_pages()` — 只收集详情页 URL
+- [x] `BaseScraper.fetch_pages()` 签名更新，增加 `ai_engine` 参数
+
+#### 11.3 AI 引擎：新增 `filter_activities()`
+- [x] 批量过滤 prompt（根据标题/日期/地址/价格/描述判断值不值得抓）
+- [x] JSON 输出解析（`worth_fetching` + `reason`）
+- [x] 失败时 fallback 到全抓
+
+#### 11.4 主流程：新增 `discover_city()` 和 `fetch_selected_details()`
+- [x] `discover_city()` — 只抓列表页摘要 → AI过滤 → 存入 candidate_activities
+- [x] `fetch_selected_details()` — 读取人工选中的候选 → 抓详情 → AI处理 → 存储
+- [x] `_fetch_single_page()` — 辅助函数：抓取单个详情页
+- [x] 保留 `scrape_city()` 供 CLI/定时任务全量抓取
+
+#### 11.5 Web 界面：新增 `/discover` 和 `/candidates`
+- [x] `/discover` 页面 — 触发发现任务（只抓列表页）
+- [x] `/discover/start` POST — 后台执行 `discover_city()`
+- [x] `/candidates` 页面 — 展示候选活动，支持筛选/勾选/批量操作
+- [x] `/candidates/table` — HTMX 局部刷新
+- [x] `/candidates/select` — 批量标记 selected
+- [x] `/candidates/reject` — 批量标记 rejected
+- [x] `/candidates/fetch-details` — 后台执行 `fetch_selected_details()`
+- [x] Dashboard 增加候选活动概览卡片
+
+#### 11.6 新增模板
+- [x] `discover.html` — 发现任务触发页
+- [x] `candidates.html` — 候选活动列表页
+- [x] `partials/candidate_table.html` — HTMX 刷新表格
+
+### Step 12: 测试 & 验证
 - [ ] 单元测试（各模块）
 - [ ] 集成测试（端到端流程）
-- [ ] 手动验证（先发布 1-2 个城市）
+- [ ] 手动验证（先测试 Saskatoon 发现流程）
 
 ## 文件清单
 
@@ -121,16 +167,16 @@ src/
 │   └── activity.py          # Step 3 - RawPage + ProcessedActivity
 ├── storage/
 │   ├── __init__.py
-│   └── db.py                # Step 4
+│   └── db.py                # Step 4 + 11.1 - 新增 candidate_activities 表
 ├── scrapers/
 │   ├── __init__.py
-│   ├── base.py              # Step 5 - 爬虫基类 + RawPage
-│   ├── todocanada.py        # Step 5
-│   ├── familyfun.py         # Step 5
-│   └── saskatoon.py         # Step 5
+│   ├── base.py              # Step 5 + 11.2 - fetch_pages 签名增加 ai_engine
+│   ├── todocanada.py        # Step 5 + 11.2 - 拆分 discover_pages + fetch_pages
+│   ├── familyfun.py         # Step 5 + 11.2 - 拆分 discover_pages + fetch_pages
+│   └── saskatoon.py         # Step 5 + 11.2 - 拆分 discover_pages + fetch_pages
 ├── ai/
 │   ├── __init__.py
-│   ├── engine.py            # Step 6 - 统一 Process Prompt
+│   ├── engine.py            # Step 6 + 11.3 - 新增 filter_activities 批量过滤
 │   └── sanitizer.py         # Step 6 - HTML 安全清理
 ├── publisher/
 │   ├── __init__.py
@@ -138,11 +184,22 @@ src/
 ├── dedup/
 │   ├── __init__.py
 │   └── deduplicator.py      # Step 8
-├── web/                     # Step 10 - 管理界面
+├── web/                     # Step 10 + 11.5 - 管理界面
 │   ├── __init__.py
-│   ├── app.py               # FastAPI 应用 + 路由
+│   ├── app.py               # FastAPI 应用 + 路由（新增 /discover + /candidates）
 │   └── templates/           # Jinja2 模板
-└── main.py                  # Step 9
+│       ├── base.html
+│       ├── dashboard.html   # 新增候选活动概览
+│       ├── discover.html    # 11.6 新增
+│       ├── candidates.html  # 11.6 新增
+│       ├── activities.html
+│       ├── activity_detail.html
+│       ├── scrape.html
+│       └── partials/
+│           ├── activity_table.html
+│           ├── candidate_table.html  # 11.6 新增
+│           └── task_row.html
+└── main.py                  # Step 9 + 11.4 - 新增 discover_city + fetch_selected_details
 ```
 
 ## 验证方法
@@ -161,17 +218,18 @@ src/
 
 ## 时间估算
 
-| 步骤 | 预估时间 |
-|------|---------|
-| ~~Step 0: Spike 验证~~ | ✅ 已完成 |
-| ~~Step 1-2: 项目初始化 + 配置~~ | ✅ 已完成 |
-| ~~Step 3-4: 模型 + 存储~~ | ✅ 已完成 |
-| ~~Step 5: 爬虫~~ | ✅ 已完成 |
-| ~~Step 6: AI 处理引擎 + HTML 清理~~ | ✅ 已完成 |
-| ~~Step 7-8: 发布 + 去重~~ | ✅ 已完成 |
-| ~~Step 9: 主流程编排~~ | ✅ 已完成 |
-| Step 10: 管理界面 | 1.5-2 天 |
-| Step 11: 测试验证 | 1 天 |
-| **合计（剩余）** | **约 2.5-3 天** |
+| 步骤 | 预估时间 | 状态 |
+|------|---------|------|
+| ~~Step 0: Spike 验证~~ | ✅ | 已完成 |
+| ~~Step 1-2: 项目初始化 + 配置~~ | ✅ | 已完成 |
+| ~~Step 3-4: 模型 + 存储~~ | ✅ | 已完成 |
+| ~~Step 5: 爬虫~~ | ✅ | 已完成 |
+| ~~Step 6: AI 处理引擎 + HTML 清理~~ | ✅ | 已完成 |
+| ~~Step 7-8: 发布 + 去重~~ | ✅ | 已完成 |
+| ~~Step 9: 主流程编排~~ | ✅ | 已完成 |
+| ~~Step 10: 管理界面~~ | ✅ | 已完成 |
+| Step 11: 二期 — 列表页 AI 预过滤 | ✅ | 已实现，待测试 |
+| Step 12: 测试验证 | 0.5 天 | 待执行 |
+| **合计（剩余）** | **约 0.5 天** | |
 
-> 相比原方案（7-8 天），统一 LLM 提取方案省去了编写和验证 CSS 选择器的时间，爬虫代码量也大幅减少。
+> 二期核心代码已全部实现，待手动验证 Saskatoon 发现流程和候选活动筛选流程。

@@ -2,19 +2,85 @@
 
 ## 概述
 
-AI 引擎接收爬虫抓取的**原始 HTML 页面**，一步完成：提取结构化数据 + 翻译为中文 + 生成摘要 + 质量评估。所有数据源使用同一个 Prompt，无需针对不同网站做适配。
+AI 引擎承担两个任务：
+1. **预过滤**（`filter_activities`）：基于列表页摘要批量判断活动是否值得抓取详情页
+2. **详情处理**（`process`）：接收详情页原始 HTML，一步完成提取结构化数据 + 翻译为中文 + 生成摘要 + 质量评估
 
-使用 Kimi API（月之暗面，Anthropic 兼容协议）。
+两个任务使用不同的 Prompt，同一模型（kimi-k2.6），通过 Kimi API（月之暗面，Anthropic 兼容协议）调用。
 
 ## AI 模型
 
 | 任务 | 模型 | 说明 |
 |------|------|------|
-| 提取 + 翻译 + 摘要 + 质量评估 | kimi-k2.6 | 统一模型，一次调用完成 |
+| 预过滤 | kimi-k2.6 | 批量判断摘要是否值得抓详情 |
+| 提取 + 翻译 + 摘要 + 质量评估 | kimi-k2.6 | 详情页处理，一次调用完成 |
 
 > 使用 Kimi Coding Plan，通过 Anthropic 兼容协议调用，费用极低。
 
-## 核心设计：统一 Process Prompt
+## 核心设计：Filter Prompt（列表页预过滤）
+
+`filter_activities()` 方法用于在阶段1（Discover）中批量过滤列表页摘要，只保留值得抓取详情页的活动。
+
+### 输入
+
+- `city_slug`: 城市标识（用于获取城市英文名）
+- `summaries`: 活动摘要列表，每条包含 `title`/`date`/`address`/`price`/`description`
+
+### 输出
+
+返回 `worth_fetching=true` 的摘要子集。LLM 原始输出格式：
+
+```json
+{
+    "results": [
+        {"index": 1, "worth_fetching": true, "reason": "社区文化节"},
+        {"index": 2, "worth_fetching": false, "reason": "商业促销"}
+    ]
+}
+```
+
+### Prompt 设计
+
+```python
+FILTER_PROMPT = """你是一位活动筛选助手。请根据以下活动摘要，判断每个活动是否值得抓取详细页面信息。
+
+我们只对以下类型的活动感兴趣（标记 YES）：
+- 文化演出（戏剧、音乐会、舞蹈、艺术展览）
+- 户外活动（徒步、骑行、跑步、自然探索）
+- 节日庆典和社区活动
+- 适合家庭/儿童的活动
+- 教育类活动（讲座、工作坊）
+- 体育赛事、比赛
+
+以下活动不适合（标记 NO）：
+- 纯商业促销、打折、招聘广告
+- 仅限特定小群体（如仅限某学校/公司内部）
+- 宗教布道类活动
+- 重复出现的日常课程/例会（如每周固定的瑜伽课）
+- 信息严重不完整（无标题、无时间）
+- 明显不是活动信息（如导航页、静态介绍页）
+
+城市: {city_name}
+
+活动列表：
+{items}
+
+请严格按以下 JSON 格式输出，只输出 JSON，不要有其他内容：
+{{
+    "results": [
+        {{"index": 1, "worth_fetching": true/false, "reason": "简要原因"}},
+        {{"index": 2, "worth_fetching": true/false, "reason": "简要原因"}}
+    ]
+}}
+"""
+```
+
+### 容错行为
+
+- JSON 解析失败或 LLM 返回无法解析的内容时，返回全部原始摘要（不丢弃任何数据）
+- 单次调用处理一个城市的全部摘要，批量判断
+
+## 核心设计：Process Prompt（详情页处理）
 
 所有数据源（TodoCanada、FamilyFunCanada、DiscoverSaskatoon）的原始 HTML 都进入同一个 Prompt。LLM 负责：
 
@@ -101,8 +167,22 @@ activity_type 取值：
 
 ## 处理流程
 
+### filter_activities（阶段1: 列表页预过滤）
+
+```
+活动摘要列表 (title/date/address/price/description)
+    │
+    └── LLM Filter (kimi-k2.6, 批量判断)
+           ├── worth_fetching=true  → 保留，存入 candidate_activities
+           └── worth_fetching=false → 标记原因，不入库或入库供参考
+```
+
+### process（阶段2: 详情页处理）
+
 ```
 RawPage (原始 HTML)
+    │
+    ├── HTML 预清洗 (本地裁剪)
     │
     └── LLM Process (kimi-k2.6, 一次调用)
            ├── 提取活动信息（支持一页多活动）
@@ -111,7 +191,7 @@ RawPage (原始 HTML)
            ├── 分类 (activity_type)
            └── 质量评估 (suitable)
                 │
-                ├── suitable=false → 标记为 skipped
+                ├── suitable=false → 跳过
                 │
                 └── suitable=true
                      │
@@ -169,109 +249,39 @@ def html_preclean(html: str, max_chars: int = 30000) -> str:
 ## API 调用封装
 
 ```python
-import anthropic
-import hashlib
-import json
-import re
-
-
-def _normalize_source_text(text: str) -> str:
-    """归一化文本用于 source_id 计算：小写、去空白"""
-    return re.sub(r'\s+', '', text.lower().strip())
-
-
-def _generate_source_id(source_url: str, title_en: str, start_date: str | None, start_time: str | None, address: str) -> str:
-    """基于内容的确定性 source_id，不依赖 LLM 输出顺序。
-
-    格式: source_url#<md5(title|datetime|address)[:8]>
-    包含 start_time 以区分同一天同地点的多场次活动。
-    """
-    datetime_key = f"{start_date or ''}{'T' + start_time if start_time else ''}"
-    key = f"{_normalize_source_text(title_en)}|{datetime_key}|{_normalize_source_text(address)}"
-    suffix = hashlib.md5(key.encode()).hexdigest()[:8]
-    return f"{source_url}#{suffix}"
-
 class AIEngine:
-    def __init__(self, settings):
-        self.client = anthropic.AsyncAnthropic(
-            base_url=settings.KIMI_BASE_URL,
+    def __init__(self, api_key: str, base_url: str, model: str, max_tokens: int = 8192):
+        self.client = anthropic.AsyncAnthropic(base_url=base_url, api_key=api_key)
+        self.model = model
+        self.max_tokens = max_tokens
+
+    @classmethod
+    def from_settings(cls, settings) -> "AIEngine":
+        return cls(
             api_key=settings.KIMI_API_KEY,
+            base_url=settings.KIMI_BASE_URL,
+            model=settings.KIMI_MODEL,
+            max_tokens=settings.KIMI_MAX_TOKENS,
         )
-        self.model = settings.KIMI_MODEL
+
+    async def filter_activities(self, city_slug: str, summaries: list[dict]) -> list[dict]:
+        """根据列表页摘要批量过滤活动，返回 worth_fetching=true 的条目。
+        失败时返回全部原始摘要（不丢弃数据）。"""
 
     async def process(self, raw_page: RawPage) -> list[ProcessedActivity]:
-        """处理一个原始页面，返回提取到的活动列表"""
-        city_name = CITIES[raw_page.city_slug]["eng_name"]
-
-        # 预清洗 HTML，减少 token 开销和噪音
-        clean_html = html_preclean(raw_page.raw_html)
-
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=8192,
-            messages=[{
-                "role": "user",
-                "content": PROCESS_PROMPT.format(
-                    city_name=city_name,
-                    source=raw_page.source,
-                    source_url=raw_page.source_url,
-                    raw_html=clean_html,
-                ),
-            }],
-        )
-
-        result = json.loads(response.content[0].text)
-        events = result.get("events", [])
-        activities = []
-
-        for idx, event in enumerate(events):
-            if not event.get("suitable", True):
-                continue
-
-            # 事件级 source_id：基于内容的确定性 ID（不依赖 LLM 输出顺序）
-            source_id = _generate_source_id(
-                raw_page.source_url, event["title_en"],
-                event.get("start_date"), event.get("start_time"),
-                event.get("address", ""),
-            )
-
-            # 解析时间字段为 UTC
-            start_time_utc = parse_llm_datetime(
-                event.get("start_date"), event.get("start_time"), raw_page.city_slug,
-            )
-            end_time_utc = parse_llm_datetime(
-                event.get("end_date"), event.get("end_time"), raw_page.city_slug,
-            )
-
-            # 无结束时间时回退为当天 23:59 本地时间
-            if not end_time_utc and start_time_utc:
-                tz = ZoneInfo(CITY_TIMEZONES[raw_page.city_slug])
-                local_start = start_time_utc.replace(tzinfo=timezone.utc).astimezone(tz)
-                local_end = local_start.replace(hour=23, minute=59, second=0, microsecond=0)
-                end_time_utc = local_end.astimezone(timezone.utc).replace(tzinfo=None)
-
-            activities.append(ProcessedActivity(
-                source=raw_page.source,
-                source_id=source_id,
-                source_url=raw_page.source_url,
-                city_slug=raw_page.city_slug,
-                title_en=event["title_en"],
-                title_zh=event["title_zh"],
-                description_zh=event["description_zh"],
-                html_zh=event["html_zh"],
-                address=event.get("address", ""),
-                venue_name=event.get("venue_name"),
-                price=event.get("price"),
-                is_free=event.get("is_free", True),
-                image_url=event.get("image_url") or raw_page.image_url,
-                highlights=event.get("highlights", []),
-                activity_type=event.get("activity_type", 1),
-                start_time_utc=start_time_utc,
-                end_time_utc=end_time_utc,
-            ))
-
-        return activities
+        """处理一个详情页，返回提取到的活动列表（仅 suitable=true 的）。"""
 ```
+
+### 两个方法的区别
+
+| 维度 | `filter_activities()` | `process()` |
+|------|----------------------|-------------|
+| 阶段 | 阶段1 Discover | 阶段2 Fetch Details |
+| 输入 | 城市slug + 摘要列表 | RawPage（详情页 HTML） |
+| 输出 | 过滤后的摘要子集 | ProcessedActivity 列表 |
+| 用途 | 批量判断是否值得抓详情 | 提取完整结构化数据 + 翻译 |
+| Token 消耗 | 低（只有摘要文本） | 高（含 HTML 页面） |
+| 容错 | 失败返回全部摘要 | 失败返回空列表 |
 
 ## HTML 清理
 
@@ -396,6 +406,7 @@ KIMI_MODEL=kimi-k2.6
 
 ## 批量处理策略
 
-1. **并行处理**: 不同城市的页面可以并行发送给 LLM
-2. **缓存**: 相同 URL 的结果缓存，避免重复处理
-3. **页面缓存**: 通过 processed_pages 表的 html_hash 检测页面变化，避免重复调用 LLM
+1. **预过滤批量处理**: `filter_activities()` 一次调用处理一个城市的全部摘要，减少 API 调用次数
+2. **并行处理**: 不同城市的页面可以并行发送给 LLM
+3. **缓存**: 相同 URL 的结果缓存，避免重复处理
+4. **页面缓存**: 通过 processed_pages 表的 html_hash 检测页面变化，避免重复调用 LLM

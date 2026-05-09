@@ -11,52 +11,69 @@
 
 ## 架构变更
 
-### 当前流程（main.py `process_city`）
+### 一期流程（已废弃）
 
 ```
-抓取 → AI处理 → 去重 → 存储 → 自动发布
+抓取所有详情页 → AI处理 → 去重 → 存储（status='pending'） → 人工审核发布
 ```
 
-抓取和发布耦合在一起，`process_city()` 完成后活动直接发布到平台。
+问题：抓详情页前无法判断值不值得抓，浪费大量时间和 API tokens。
 
-### 新流程
+### 二期新流程（两阶段）
 
 ```
-阶段1（抓取）：抓取 → AI处理 → 去重 → 存储（status='pending'）
-阶段2（审核）：管理界面浏览 → 人工选择 → 调用发布 API（status → 'published'）
+阶段1（发现）：只抓列表页摘要 → AI 批量过滤 → 存入 candidate_activities
+阶段2（筛选）：管理界面浏览候选活动 → 人工勾选 → 只抓选中的详情页
+阶段3（处理）：AI 处理详情页 → 存储到 activities（status='pending'）
+阶段4（发布）：管理界面浏览 → 人工选择 → 调用发布 API（status → 'published'）
 ```
 
 核心变更：
-- `process_city()` 拆分为 `scrape_city()`（抓取+处理+存储，status='pending'）和 `publish_one()`（发布单个活动）
-- 移除 `process_city()` 中的自动发布逻辑（当前 main.py:90-102）
-- `run_once()` 和 `run_scheduled()` 只执行抓取，不再自动发布
+- 新增 `discover_city()`：只抓列表页摘要，AI 过滤，存入 `candidate_activities`
+- 新增 `fetch_selected_details()`：读取人工选中的候选，抓详情 + AI 处理 + 存储
+- Scraper 拆分 `discover_pages()`（只抓列表）和 `fetch_pages()`（完整流程）
+- 人工审核节点从"发布前"前移到"抓详情前"
+- 保留 `scrape_city()` 和 `publish_one()` 供 CLI/定时任务全量抓取使用
 
 ```python
-# src/main.py 变更示意
+# src/main.py 核心函数
+
+async def discover_city(
+    city_slug: str, start_date: datetime, end_date: datetime,
+    db: Database, ai_engine: AIEngine,
+):
+    """只抓列表页摘要，AI 过滤，存入 candidate_activities"""
+    summaries = await scraper.discover_pages(city_slug, start_date, end_date)
+    filtered = await ai_engine.filter_activities(city_slug, summaries)
+    await db.save_candidates(filtered)
+
+
+async def fetch_selected_details(
+    city_slug: str, start_date: datetime, end_date: datetime,
+    db: Database, ai_engine: AIEngine,
+):
+    """从 candidate_activities 读取人工选中的活动，抓详情 + AI 处理 + 存储"""
+    candidates = await db.get_candidates_to_fetch(city_slug)
+    for cand in candidates:
+        raw_page = await _fetch_single_page(cand["source"], cand["source_url"], city_slug)
+        activities = await ai_engine.process(raw_page)
+        # ... 去重、存储、关联 candidate ...
+
 
 async def scrape_city(
     city_slug: str, start_date: datetime, end_date: datetime,
     db: Database, ai_engine: AIEngine,
 ):
-    """抓取 + AI处理 + 去重 + 存储（不发布，status='pending'）"""
-    raw_pages = await fetch_all_pages(city_slug, start_date, end_date)
-    for page in raw_pages:
-        # ... 与当前 process_city 相同的去重和存储逻辑 ...
-        # 移除自动发布部分（当前 main.py:90-102）
-        pass
+    """完整抓取流程（CLI/定时任务用）：发现 + AI过滤 + 抓详情 + 处理 + 存储"""
+    raw_pages = await fetch_all_pages(city_slug, start_date, end_date, ai_engine)
+    # ... 处理每个详情页 ...
 
 
 async def publish_one(
     activity_id: int, db: Database, publisher: WoohelpsPublisher,
 ) -> dict:
     """发布单个活动到海外新生活"""
-    activity = await db.get_activity(activity_id)
-    if not activity or activity["status"] == "published":
-        return {"error": "活动不存在或已发布"}
-    city_id = publisher.get_city_id(CITIES[activity["city_slug"]]["eng_name"])
-    result = await publisher.publish_activity(activity, city_id)
-    # ... 标记发布结果 ...
-    return result
+    # ... 发布逻辑不变 ...
 ```
 
 ## 技术选型
@@ -81,16 +98,24 @@ async def publish_one(
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  加拿大活动管理系统                              [抓取新活动]  │
+│  加拿大活动管理系统              [发现新活动] [抓取新活动]      │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
+│  候选活动概览                                                  │
+│  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
+│  │ Toronto │  │Vancouver │  │ Montreal │  │ Calgary  │      │
+│  │ 23 待处理│  │ 15 待处理 │  │ 8 待处理 │  │ 5 待处理 │      │
+│  │ 12 已选中│  │ 8 已选中  │  │ 3 已选中 │  │ 2 已选中 │      │
+│  └─────────┘  └──────────┘  └──────────┘  └──────────┘      │
+│                                                              │
+│  已发布活动统计                                                │
 │  ┌─────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
 │  │ Toronto │  │Vancouver │  │ Montreal │  │ Calgary  │      │
 │  │ 12 待发布│  │ 8 待发布  │  │ 5 待发布 │  │ 3 待发布 │      │
 │  │ 45 已发布│  │ 30 已发布 │  │ 20 已发布│  │ 15 已发布│      │
 │  └─────────┘  └──────────┘  └──────────┘  └──────────┘      │
 │                                                              │
-│  最近抓取任务                                                  │
+│  最近任务                                                      │
 │  ┌────────────────────────────────────────────────────────┐  │
 │  │ Toronto    │ todocanada   │ ✅ 完成  │ 12 new │ 10min前│  │
 │  │ Vancouver  │ familyfun    │ 🔄 运行中│ -      │ 进行中 │  │
@@ -100,11 +125,82 @@ async def publish_one(
 ```
 
 功能：
-- 各城市活动统计卡片（待发布数 / 已发布数 / 总数）
-- 最近抓取任务状态列表
-- 快捷按钮：「抓取全部城市」→ 跳转到 `/scrape`
+- **候选活动概览**：各城市待处理/已选中/总数，点击跳转到 `/candidates`
+- **已发布活动统计**：各城市待发布/已发布/总数，点击跳转到 `/activities`
+- **快捷按钮**：「发现新活动」→ `/discover`，「抓取新活动」→ `/scrape`
+- 最近任务状态列表（发现和抓取共用 scrape_tasks 表）
 
-### 2. 活动列表（`GET /activities`）
+### 2. 候选活动（`GET /candidates`）
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  候选活动（列表页抓取结果）                                      │
+│  城市: [全部 ▾]  AI判断: [全部 ▾]  人工状态: [待处理 ▾]  [筛选]  │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  [✓] │ Blithe Spirit          │ Apr 29-May 10 │ $36-$64   │  │
+│      │ AI: 文化演出，值得抓      │ 待处理         │ [选中][拒绝]│
+│  [ ] │ Weekly Yoga Class      │ 每周三        │ Free      │  │
+│      │ AI: 重复课程，不值得      │ 已拒绝         │ [选中][拒绝]│
+│  [✓] │ The Pianomen           │ Jul 20        │ $25       │  │
+│      │ AI: 文化演出，值得抓      │ 已选中         │ [选中][拒绝]│
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│  ☑ 全选   [批量选中] [批量拒绝] [抓取选中详情]                  │
+│  共 42 个候选 / 已选 3 个 / 待处理 23 个                        │
+└──────────────────────────────────────────────────────────────┘
+```
+
+功能：
+- **筛选**：城市（下拉）、AI 判断（值得/不值得/全部）、人工状态（pending/selected/rejected/全部）
+- **表格列**：复选框 | 标题 | 日期 | 价格 | AI 判断（是/否 + 原因） | 人工状态 | 操作
+- **操作按钮**：每行「选中」「拒绝」「查看原始页」
+- **批量操作**：底栏「批量选中」「批量拒绝」「抓取选中详情」
+- **HTMX 交互**：筛选时局部刷新表格，不重载整个页面
+
+API 端点：
+- `GET /candidates` → 渲染列表页
+- `GET /candidates/table` → HTMX 局部刷新表格（筛选时）
+- `POST /candidates/select` → 批量标记 selected（candidate_ids[]）
+- `POST /candidates/reject` → 批量标记 rejected
+- `POST /candidates/fetch-details` → 对 human_status='selected' 且 fetched_detail=0 的候选抓详情
+
+### 3. 发现新活动（`GET /discover`）
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  发现新活动（只抓列表页）                                       │
+│                                                              │
+│  选择城市:  ☑ Toronto  ☑ Vancouver  ☑ Montreal  ☐ ...       │
+│            [全选] [取消全选]                                    │
+│                                                              │
+│  日期范围:  [2025-07-10] ~ [2025-08-10]                       │
+│                                                              │
+│  [开始发现]                                                   │
+│                                                              │
+├──────────────────────────────────────────────────────────────┤
+│  发现任务历史                                                  │
+│  ┌───────┬──────────┬─────────┬──────────┬──────┐           │
+│  │ ID    │ 城市     │ 状态    │ 当前城市 │ 时间 │           │
+│  │ 5     │ Toronto  │ 🔄 运行 │ Toronto  │ 30s  │           │
+│  │ 4     │ Vancouver│ ✅ 完成 │ -        │ 5min │           │
+│  └───────┴──────────┴─────────┴──────────┴──────┘           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+功能：
+- 城市多选（复选框，含全选/取消全选）
+- 日期范围选择（默认：今天 ~ 30天后）
+- 「开始发现」按钮 → 后台异步执行 `discover_city()`，只抓列表页摘要
+- 任务历史列表，HTMX 每 5 秒自动轮询更新运行中的任务状态
+- 任务完成后可点击跳转到 `/candidates` 查看候选活动
+
+API 端点：
+- `GET /discover` → 渲染发现页
+- `POST /discover/start` → 启动发现任务（表单编码：`city_slugs=toronto&city_slugs=vancouver&start_date=...`）
+- `GET /scrape/task/{id}/status` → 任务状态片段（HTMX 轮询，发现和抓取共用）
+
+### 4. 活动列表（`GET /activities`）
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -133,7 +229,7 @@ API 端点：
 - `GET /activities/table` → HTMX 局部刷新表格（筛选/翻页时）
 - `POST /activities/publish` → 批量发布选中活动（表单编码：`activity_ids=1&activity_ids=2&activity_ids=3`）
 
-### 3. 活动详情（`GET /activity/{id}`）
+### 5. 活动详情（`GET /activity/{id}`）
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -167,7 +263,7 @@ API 端点：
 - 操作按钮：「发布到海外新生活」「返回列表」
 - 发布后显示平台活动 ID 和发布时间
 
-### 4. 抓取页面（`GET /scrape`）
+### 6. 抓取页面（`GET /scrape`）
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -225,59 +321,102 @@ CREATE TABLE IF NOT EXISTS scrape_tasks (
 
 ### 执行流程
 
+发现和抓取共用 `scrape_tasks` 表记录任务状态，但使用独立的 guard lock：
+
 ```python
-# src/web/app.py 中
+# src/web/app.py
 
 import asyncio
 
-# 全局锁：同时只允许一个抓取任务运行
-# 用 guard lock 保证「检查 + 标记」的原子性
+# 发现任务锁
+_discover_guard = asyncio.Lock()
+_discover_running = False
+
+# 详情抓取锁
+_fetch_guard = asyncio.Lock()
+_fetch_running = False
+
+# 全量抓取锁
 _scrape_guard = asyncio.Lock()
 _scrape_running = False
+
+
+@app.post("/discover/start")
+async def start_discover(request: Request):
+    global _discover_running
+    form = await request.form()
+    city_slugs = form.getlist("city_slugs")
+    ...
+    async with _discover_guard:
+        if _discover_running:
+            return HTMLResponse("已有发现任务正在运行", status_code=409)
+        _discover_running = True
+    try:
+        task_id = await db.create_scrape_task(city_slugs)
+    except Exception:
+        _discover_running = False
+        raise
+
+    async def _run():
+        global _discover_running
+        try:
+            for city in city_slugs:
+                await db.update_scrape_task(task_id, current_city=city)
+                await discover_city(city, start_date, end_date, db, ai_engine)
+            await db.complete_scrape_task(task_id)
+        except Exception as e:
+            await db.fail_scrape_task(task_id, str(e))
+        finally:
+            _discover_running = False
+
+    asyncio.create_task(_run())
+    return RedirectResponse(url=f"/discover?task={task_id}", status_code=303)
+
+
+@app.post("/candidates/fetch-details")
+async def candidates_fetch_details(request: Request):
+    global _fetch_running
+    form = await request.form()
+    city = form.get("city", "")
+    ...
+    async with _fetch_guard:
+        if _fetch_running:
+            return HTMLResponse("已有详情抓取任务正在运行", status_code=409)
+        _fetch_running = True
+
+    async def _run():
+        global _fetch_running
+        try:
+            await fetch_selected_details(city, start_date, end_date, db, ai_engine)
+        except Exception as e:
+            logger.error(f"Fetch details failed: {e}")
+        finally:
+            _fetch_running = False
+
+    asyncio.create_task(_run())
+    return RedirectResponse(url=f"/candidates?city={city}", status_code=303)
+
 
 @app.post("/scrape/start")
 async def start_scrape(request: Request):
     global _scrape_running
-
-    # 先解析表单，在 guard 外完成可能失败的操作
-    form = await request.form()
-    city_slugs = form.getlist("city_slugs")
-    start_date = ...  # 从表单解析
-
-    # guard lock 保护检查+标记，防止并发请求竞态
+    ...
     async with _scrape_guard:
         if _scrape_running:
-            return HTMLResponse("已有抓取任务正在运行，请等待完成", status_code=409)
+            return HTMLResponse("已有抓取任务正在运行", status_code=409)
         _scrape_running = True
-
-    # 创建 DB 任务记录（在标记后执行，失败时需要重置标记）
-    try:
-        task_id = await db.create_scrape_task(city_slugs)
-    except Exception:
-        _scrape_running = False
-        raise
-
+    ...
     async def _run():
         global _scrape_running
         try:
             for city in city_slugs:
-                await db.update_scrape_task(task_id, current_city=city)
                 await scrape_city(city, start_date, end_date, db, ai_engine)
             await db.complete_scrape_task(task_id)
         except Exception as e:
             await db.fail_scrape_task(task_id, str(e))
         finally:
             _scrape_running = False
-
-    asyncio.create_task(_run())
-    return RedirectResponse(url=f"/scrape?task={task_id}", status_code=303)
-
-
-@app.get("/scrape/task/{task_id}/status")
-async def task_status(task_id: int):
-    """HTMX 轮询端点，返回任务状态片段"""
-    task = await db.get_scrape_task(task_id)
-    return HTMLResponse(render_template("partials/task_row.html", task=task))
+    ...
 ```
 
 ### 进度更新
@@ -297,6 +436,44 @@ async def task_status(task_id: int):
 在 `src/storage/db.py` 中新增：
 
 ```python
+# --- Candidate Activities ---
+
+async def save_candidates(candidates: list[dict]) -> int:
+    """批量保存候选活动（INSERT OR UPDATE），返回操作数量"""
+
+async def list_candidates(
+    city_slug: str | None = None,
+    ai_worth: bool | None = None,
+    human_status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """分页查询候选活动，支持按城市/AI判断/人工状态筛选"""
+
+async def count_candidates(
+    city_slug: str | None = None,
+    ai_worth: bool | None = None,
+    human_status: str | None = None,
+) -> int:
+    """统计候选活动数量"""
+
+async def update_candidate_status(ids: list[int], status: str) -> None:
+    """批量更新候选活动的人工状态（pending/selected/rejected）"""
+
+async def mark_candidate_fetched(candidate_id: int, activity_id: int) -> None:
+    """标记候选活动已抓详情，并关联 activities.id"""
+
+async def get_candidates_to_fetch(city_slug: str | None = None) -> list[dict]:
+    """获取 human_status='selected' AND fetched_detail=0 的候选"""
+
+async def get_candidate(candidate_id: int) -> dict | None:
+    """获取单个候选活动详情"""
+
+async def count_candidates_by_city() -> dict[str, dict]:
+    """按城市和人工状态统计候选数量
+    返回: {"toronto": {"total": 50, "pending": 30, "selected": 20}, ...}
+    """
+
 # --- Activity 查询（管理界面用）---
 
 async def list_activities(
@@ -322,22 +499,22 @@ async def get_activities_by_ids(ids: list[int]) -> list[dict]:
 # --- Scrape Tasks ---
 
 async def create_scrape_task(city_slugs: list[str]) -> int:
-    """创建抓取任务记录，返回 task_id"""
+    """创建抓取/发现任务记录，返回 task_id"""
 
 async def get_scrape_task(task_id: int) -> dict | None:
-    """获取抓取任务状态"""
+    """获取任务状态"""
 
 async def update_scrape_task(task_id: int, **kwargs) -> None:
-    """更新抓取任务进度"""
+    """更新任务进度"""
 
 async def complete_scrape_task(task_id: int) -> None:
-    """标记抓取任务完成"""
+    """标记任务完成"""
 
 async def fail_scrape_task(task_id: int, error: str) -> None:
-    """标记抓取任务失败"""
+    """标记任务失败"""
 
 async def list_recent_scrape_tasks(limit: int = 20) -> list[dict]:
-    """获取最近的抓取任务列表"""
+    """获取最近的任务列表"""
 ```
 
 已有的方法（无需修改）：
@@ -349,6 +526,13 @@ async def list_recent_scrape_tasks(limit: int = 20) -> list[dict]:
 | 方法 | 路径 | 功能 | 返回 |
 |------|------|------|------|
 | GET | `/` | Dashboard | HTML |
+| GET | `/candidates` | 候选活动列表 | HTML |
+| GET | `/candidates/table` | 候选表格片段 | HTML (HTMX) |
+| POST | `/candidates/select` | 批量选中候选 | Redirect |
+| POST | `/candidates/reject` | 批量拒绝候选 | Redirect |
+| POST | `/candidates/fetch-details` | 抓取选中详情 | Redirect |
+| GET | `/discover` | 发现新活动页面 | HTML |
+| POST | `/discover/start` | 启动发现任务 | Redirect |
 | GET | `/activities` | 活动列表 | HTML |
 | GET | `/activities/table` | 活动表格片段 | HTML (HTMX) |
 | POST | `/activities/publish` | 批量发布 | Redirect |
@@ -395,32 +579,60 @@ app = FastAPI(dependencies=[Depends(verify_auth)])
 - uvicorn 启动 `host="127.0.0.1"`：默认只监听本地回环，外部无法访问
 - 生产环境建议通过反向代理（Nginx）添加 HTTPS 和访问控制
 
+## 新增数据表
+
+### candidate_activities
+
+存储列表页抓到的活动摘要，供人工筛选。
+
+```sql
+CREATE TABLE IF NOT EXISTS candidate_activities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    city_slug TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    event_date TEXT,
+    address TEXT DEFAULT '',
+    price TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    ai_worth_fetching INTEGER,         -- 1=值得, 0=不值得, NULL=未判断
+    ai_reason TEXT,
+    human_status TEXT NOT NULL DEFAULT 'pending',
+    fetched_detail INTEGER NOT NULL DEFAULT 0,
+    activity_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(source, source_url)
+);
+```
+
 ## 文件结构
 
 ```
 src/
-├── web/                          # 新增：Web 管理界面
+├── web/                          # Web 管理界面
 │   ├── __init__.py
 │   ├── app.py                    # FastAPI 应用 + 所有路由
 │   └── templates/
 │       ├── base.html             # 布局（Tailwind + HTMX CDN）
-│       ├── dashboard.html        # 仪表盘
-│       ├── activities.html       # 活动列表
+│       ├── dashboard.html        # 仪表盘（含候选活动概览）
+│       ├── candidates.html       # 候选活动列表（人工筛选）
+│       ├── discover.html         # 发现新活动（只抓列表页）
+│       ├── activities.html       # 活动列表（已抓详情的活动）
 │       ├── activity_detail.html  # 活动详情
-│       ├── scrape.html           # 抓取触发 + 任务列表
+│       ├── scrape.html           # 抓取触发（全量抓取，供 CLI 用）
 │       └── partials/             # HTMX 局部片段
-│           ├── activity_table.html   # 活动表格（筛选/翻页刷新）
-│           ├── activity_row.html     # 单行活动
-│           ├── city_card.html        # 城市统计卡片
-│           └── task_row.html         # 抓取任务行（轮询刷新）
-├── config/                       # 不变
-├── models/                       # 不变
-├── storage/                      # 新增查询方法
-├── scrapers/                     # 不变
-├── ai/                           # 不变
-├── publisher/                    # 不变
-├── dedup/                        # 不变
-└── main.py                       # 修改：拆分 process_city，移除自动发布
+│           ├── activity_table.html   # 活动表格
+│           ├── candidate_table.html  # 候选活动表格
+│           └── task_row.html         # 任务行
+├── config/                       # 配置
+├── models/                       # 数据模型
+├── storage/                      # 存储（新增 candidate_activities 表）
+├── scrapers/                     # 爬虫（拆分 discover_pages + fetch_pages）
+├── ai/                           # AI 处理（新增 filter_activities）
+├── publisher/                    # 发布模块
+├── dedup/                        # 去重模块
+└── main.py                       # 主流程（discover_city + fetch_selected_details + scrape_city + publish_one）
 ```
 
 入口方式：
@@ -430,14 +642,15 @@ src/
 python -m src.web.app
 # → http://localhost:8000
 
-# 定时抓取（Step 10.1 完成后：仅抓取+存储，不自动发布）
-python -m src.main --schedule
+# Web 流程：
+# 1. 访问 /discover → 选择城市 → 开始发现（只抓列表页摘要）
+# 2. 访问 /candidates → 筛选/勾选活动 → 选中/拒绝 → 抓取选中详情
+# 3. 访问 /activities → 审核已抓详情活动 → 发布到平台
 
-# 单次抓取指定城市（Step 10.1 完成后：仅抓取+存储，不自动发布）
+# CLI 全量抓取（定时任务用，不走人工筛选）
+python -m src.main --schedule
 python -m src.main --city toronto
 ```
-
-> **注意**：当前 `python -m src.main` 仍会自动发布（main.py:90-102）。Step 10.1 完成后才改为仅抓取+存储。
 
 ## 新增依赖
 

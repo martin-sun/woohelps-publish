@@ -77,9 +77,18 @@ class BaseScraper(ABC):
     """爬虫基类 — 只负责页面导航和抓取原始 HTML"""
 
     @abstractmethod
-    async def fetch_pages(
+    async def discover_pages(
         self, city_slug: str, start_date: datetime, end_date: datetime
+    ) -> list[dict]:
+        """只抓列表页，返回活动摘要列表（含 url/title/date/address/price/description）"""
+        ...
+
+    @abstractmethod
+    async def fetch_pages(
+        self, city_slug: str, start_date: datetime, end_date: datetime,
+        ai_engine=None,
     ) -> list[RawPage]:
+        """完整流程：发现 + 可选AI过滤 + 抓详情页 HTML"""
         ...
 
     @property
@@ -392,84 +401,76 @@ SCRAPERS: dict[str, type[BaseScraper]] = {
 }
 
 
-async def fetch_all_pages(
-    city_slug: str, start_date: datetime, end_date: datetime
-) -> list[RawPage]:
-    """从所有数据源抓取原始页面"""
-    all_pages = []
+async def discover_city(
+    city_slug: str, start_date: datetime, end_date: datetime,
+    db: Database, ai_engine: AIEngine,
+):
+    """只抓列表页摘要，AI 过滤，存入 candidate_activities"""
+    for name, scraper_cls in SCRAPERS.items():
+        scraper = scraper_cls()
+        if city_slug not in scraper.supported_cities:
+            continue
+        summaries = await scraper.discover_pages(city_slug, start_date, end_date)
+        if ai_engine and summaries:
+            summaries = await ai_engine.filter_activities(city_slug, summaries)
+        # 存入 candidate_activities ...
 
+
+async def fetch_all_pages(
+    city_slug: str, start_date: datetime, end_date: datetime,
+    ai_engine=None,
+) -> list[RawPage]:
+    """从所有数据源抓取原始页面（全量模式，供 CLI/定时任务用）"""
+    all_pages = []
     for name, scraper_cls in SCRAPERS.items():
         scraper = scraper_cls()
         if city_slug not in scraper.supported_cities:
             continue
         try:
-            pages = await scraper.fetch_pages(city_slug, start_date, end_date)
+            pages = await scraper.fetch_pages(city_slug, start_date, end_date, ai_engine)
             all_pages.extend(pages)
         except Exception as e:
             logger.error(f"Scraper {name} failed for {city_slug}: {e}")
-
     return all_pages
 ```
 
-## 主流程
+## 主流程（二期：两阶段抓取）
+
+### 阶段 1：发现（只抓列表页）
 
 ```python
-async def process_city(city_slug: str, start_date: datetime, end_date: datetime):
-    # 1. 爬虫抓取原始页面
-    raw_pages = await fetch_all_pages(city_slug, start_date, end_date)
-
-    for page in raw_pages:
-        # 2. 页面缓存：内容未变化且上次成功则跳过
-        html_hash = compute_html_hash(page.raw_html)
-        cached = await db.get_processed_page(page.source, page.source_url)
-        if cached and cached["html_hash"] == html_hash and cached["status"] in ("success", "empty"):
+async def discover_city(city_slug: str, start_date: datetime, end_date: datetime,
+                        db: Database, ai_engine: AIEngine):
+    for name, scraper_cls in SCRAPERS.items():
+        scraper = scraper_cls()
+        if city_slug not in scraper.supported_cities:
             continue
-
-        # 3. LLM 提取 + 翻译 + 摘要（一页可产出多个活动）
-        try:
-            activities = await ai_engine.process(page)
-        except Exception as e:
-            await db.save_processed_page(page.source, page.source_url, html_hash, "failed")
-            logger.error(f"LLM processing failed for {page.source_url}: {e}")
-            continue
-
-        for activity in activities:
-            # 4. 跳过无开始时间的活动
-            if not activity.start_time_utc:
-                continue
-
-            # 5. 跳过超出目标日期范围的活动
-            if activity.start_time_utc > end_date:
-                continue
-
-            # 6. 事件级精确去重（source + source_id，UNIQUE 约束兜底）
-            if await db.exists(source=activity.source, source_id=activity.source_id):
-                continue
-
-            # 7. 内容去重（标题+时间+地址 hash）
-            activity.content_hash = compute_content_hash(activity)
-            if await db.exists_content_hash(activity.city_slug, activity.content_hash):
-                continue
-
-            # 8. HTML 安全清理
-            activity.html_zh = sanitize_html(activity.html_zh, page.source_url)
-
-            # 9. 存储 + 发布
-            await db.save(activity)
-            try:
-                await publisher.publish(activity)
-            except Exception as e:
-                logger.error(f"Publish failed for {activity.source_id}: {e}")
-                await db.mark_publish_failed(activity.source, activity.source_id, str(e))
-                continue
-
-        # 记录页面处理状态
-        await db.save_processed_page(
-            page.source, page.source_url, html_hash,
-            "success" if activities else "empty",
-            activity_count=len(activities),
-        )
+        summaries = await scraper.discover_pages(city_slug, start_date, end_date)
+        if ai_engine and summaries:
+            summaries = await ai_engine.filter_activities(city_slug, summaries)
+        # 存入 candidate_activities
 ```
+
+### 阶段 2：抓详情（人工选中后）
+
+```python
+async def fetch_selected_details(city_slug: str, start_date: datetime, end_date: datetime,
+                                 db: Database, ai_engine: AIEngine):
+    candidates = await db.get_candidates_to_fetch(city_slug)
+    for cand in candidates:
+        raw_page = await _fetch_single_page(cand["source"], cand["source_url"], city_slug)
+        activities = await ai_engine.process(raw_page)
+        # 去重、存储、关联 candidate ...
+```
+
+### 全量抓取（CLI/定时任务，不走人工筛选）
+
+```python
+async def scrape_city(city_slug: str, start_date: datetime, end_date: datetime,
+                      db: Database, ai_engine: AIEngine):
+    raw_pages = await fetch_all_pages(city_slug, start_date, end_date, ai_engine)
+    for page in raw_pages:
+        # ... 与之前相同的处理逻辑 ...
 
 ## 图片处理
 

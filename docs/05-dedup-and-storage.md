@@ -128,6 +128,88 @@ CREATE TABLE IF NOT EXISTS scrape_tasks (
 );
 ```
 
+### 候选活动表 `candidate_activities`
+
+阶段1（Discover）产出的列表页摘要，等待 AI 预过滤和人工筛选。是两阶段抓取流程的核心中间表。
+
+```sql
+CREATE TABLE IF NOT EXISTS candidate_activities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    city_slug TEXT NOT NULL,           -- 城市 slug
+    source TEXT NOT NULL,              -- todocanada/familyfuncanada/discoversaskatoon
+    source_url TEXT NOT NULL,          -- 活动详情页 URL
+    title TEXT NOT NULL DEFAULT '',    -- 活动标题
+    event_date TEXT,                   -- 活动日期（原始文本）
+    address TEXT DEFAULT '',           -- 地址
+    price TEXT DEFAULT '',             -- 价格（原始文本）
+    description TEXT DEFAULT '',       -- 简要描述
+    ai_worth_fetching INTEGER,         -- AI 判断：1=值得抓详情, 0=不值得, NULL=未过滤
+    ai_reason TEXT,                    -- AI 判断原因
+    human_status TEXT NOT NULL DEFAULT 'pending',  -- pending/selected/rejected
+    fetched_detail INTEGER NOT NULL DEFAULT 0,     -- 1=已抓详情
+    activity_id INTEGER,               -- 关联的 activities 表 ID（抓详情后填入）
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(source, source_url)
+);
+
+CREATE INDEX idx_candidates_city ON candidate_activities(city_slug);
+CREATE INDEX idx_candidates_status ON candidate_activities(human_status);
+CREATE INDEX idx_candidates_source ON candidate_activities(source);
+```
+
+**字段说明**：
+
+| 字段 | 说明 |
+|------|------|
+| `ai_worth_fetching` | `filter_activities()` 的判断结果。1=值得抓取详情页，0=不值得，NULL=未经过 AI 过滤 |
+| `ai_reason` | AI 给出的判断原因（如"社区文化节"、"商业促销"） |
+| `human_status` | 人工筛选状态：`pending`(待审核) → `selected`(选中，等待抓详情) / `rejected`(拒绝) |
+| `fetched_detail` | 0=未抓详情，1=已抓取详情页并处理 |
+| `activity_id` | 关联 `activities.id`，详情页处理完成后填入 |
+
+#### 与 `activities` 表的关系
+
+- `candidate_activities`：列表页摘要（待审核），数据来自 `discover_pages()`
+- `activities`：已抓详情的正式活动（可发布），数据来自 `process()`
+
+数据流：
+
+```
+列表页摘要  →  AI filter  →  candidate_activities
+                                    │
+                              人工筛选 (Web UI)
+                                    │
+                              selected 条目
+                                    │
+                              抓详情页 HTML
+                                    │
+                              AI process()
+                                    │
+                              activities 表
+                                    │
+                              candidate.activity_id 回填
+```
+
+#### 数据库方法
+
+```python
+# 写入
+await db.save_candidates(candidates)           # 批量保存候选（UPSERT by source+source_url）
+
+# 查询
+await db.list_candidates(city_slug, ai_worth, human_status, limit, offset)
+await db.count_candidates(city_slug, ai_worth, human_status)
+await db.get_candidate(candidate_id)
+await db.count_candidates_by_city()             # 按城市+状态统计
+
+# 状态更新
+await db.update_candidate_status(ids, status)   # 批量更新 human_status
+await db.mark_candidate_fetched(id, activity_id) # 标记已抓详情 + 关联 activity
+
+# 阶段2 读取
+await db.get_candidates_to_fetch(city_slug)     # human_status='selected' AND fetched_detail=0
+```
+
 ## 去重策略
 
 ### 第零层：页面级缓存（processed_pages）
@@ -191,9 +273,25 @@ SIMILARITY_PROMPT = """判断以下两个活动是否是同一个活动：
 | 系列活动多场次 | 各场次有不同 source_id，不会被误去重 | 需要考虑是否合并展示 |
 | 标题翻译/大小写差异 | 归一化后覆盖常见情况 | AI 相似度 |
 
+## 候选活动状态流转
+
+`candidate_activities.human_status` 跟踪人工筛选状态：
+
+```
+pending ──→ selected ──→ (fetched_detail=1, activity_id 回填)
+   │
+   └──→ rejected
+```
+
+| 状态 | 说明 |
+|------|------|
+| `pending` | Discover 写入，等待人工审核 |
+| `selected` | 人工勾选，等待抓详情 |
+| `rejected` | 人工拒绝 |
+
 ## 发布状态流转
 
-使用 `status` (TEXT) 字段跟踪发布状态，配合 `platform_activity_id`、`publish_error` 辅助字段。
+`activities.status` 跟踪正式活动的发布状态：
 
 ```
 pending ──→ published
@@ -205,11 +303,9 @@ pending ──→ published
 
 | 状态 | 说明 | 对应代码 |
 |------|------|---------|
-| `pending` | 已入库，等待发布 | 初始状态，`db.save()` 写入 |
+| `pending` | 已入库，等待发布 | `db.save()` 写入 |
 | `published` | 已成功发布到平台 | `mark_published()` 设置 `status='published'` + `platform_activity_id` |
 | `failed` | 发布失败，可重试 | `mark_publish_failed()` 设置 `status='failed'` + `publish_error` |
 | `skipped` | 内容重复，跳过 | `mark_skipped()` 设置 `status='skipped'` |
 
-**当前行为**（Step 9）：`process_city()` 在 `db.save()` 后立即尝试发布（main.py:90-102），成功则 `mark_published()`，失败则 `mark_publish_failed()`。活动在数据库中经历 `pending → published/failed`。
-
-**管理界面目标**（Step 10.1）：拆分后 `scrape_city()` 只做存储（`status='pending'`），活动停留在管理界面等待人工审核，由用户手动触发发布。
+`fetch_selected_details()` 只做存储（`status='pending'`），活动在管理界面等待人工审核，由用户手动触发发布。
