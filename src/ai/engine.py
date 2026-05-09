@@ -10,6 +10,73 @@ from loguru import logger
 from src.config.settings import CITIES, CITY_TIMEZONES
 from src.models.activity import ProcessedActivity, RawPage
 
+EXTRACT_LIST_PROMPT = """你是一个专业的网页内容提取助手。请从以下活动列表页的 HTML 中提取所有活动条目的摘要信息。
+
+注意：
+1. 这是活动列表页，包含多个活动的摘要/卡片/条目
+2. 每个活动通常会有标题、日期、详情链接(URL)、简短描述
+3. 请提取所有能找到的活动条目，不要遗漏
+4. URL 必须是完整的绝对路径（如 https://example.com/event/xxx）
+5. 如果页面中没有活动信息，返回空列表
+
+城市: {city_name}
+来源: {source}
+页面 URL: {page_url}
+
+页面 HTML:
+{raw_html}
+
+请严格按以下 JSON 格式输出，只输出 JSON，不要有其他内容：
+{{
+    "events": [
+        {{
+            "url": "活动详情页的完整 URL",
+            "title": "活动标题（原文）",
+            "date": "活动日期/时间信息（原文）",
+            "address": "活动地址（如有，原文）",
+            "price": "费用信息（如有，原文）",
+            "description": "活动简短描述（原文，200字以内）"
+        }}
+    ]
+}}
+"""
+
+FILTER_PROMPT = """你是一位活动筛选助手。请根据以下活动摘要，判断每个活动是否值得抓取详细页面信息。
+
+我们主要对以下类型的活动感兴趣（标记 YES）：
+- 免费的公益活动（社区集市、文化节、免费演出、公园活动）
+- 免费或低价的户外活动（徒步、骑行、自然探索、免费导览）
+- 免费或低价的家庭/儿童活动
+- 免费或低价的教育类活动（公开讲座、免费工作坊）
+- 免费或低价的节日庆典
+- 小额付费活动（门票 $20 以内，或有明显折扣/早鸟价）
+
+以下活动不适合（标记 NO）：
+- 高价活动（门票 $20 以上，除非是重大演出/赛事）
+- 纯商业促销、打折、招聘广告
+- 仅限特定小群体（如仅限某学校/公司内部）
+- 宗教布道类活动
+- 重复出现的日常课程/例会（如每周固定的瑜伽课）
+- 需要长期承诺的活动（如多周课程、会员制活动）
+- 信息严重不完整（无标题、无时间）
+- 明显不是活动信息（如导航页、静态介绍页）
+
+判断原则：优先免费公益活动，小额付费也可以。不确定时标 NO。
+
+城市: {city_name}
+
+活动列表：
+{items}
+
+请严格按以下 JSON 格式输出，只输出 JSON，不要有其他内容：
+{{
+    "results": [
+        {{"index": 1, "worth_fetching": true/false, "reason": "简要原因", "title_zh": "中文标题", "description_zh": "中文摘要（一句话概括活动内容）"}},
+        {{"index": 2, "worth_fetching": true/false, "reason": "简要原因", "title_zh": "中文标题", "description_zh": "中文摘要（一句话概括活动内容）"}}
+    ]
+}}
+"""
+
 PROCESS_PROMPT = """你是一个专业的加拿大活动信息处理助手。你的任务是从网页 HTML 中提取活动信息，翻译为中文，并生成摘要。
 
 ## 输入
@@ -121,6 +188,30 @@ def _normalize_source_text(text: str) -> str:
     return re.sub(r'\s+', '', text.lower().strip())
 
 
+def _extract_json(text: str) -> str | None:
+    """从 LLM 响应中提取 JSON 字符串"""
+    code_block = re.search(r'```(?:json)?\s*\n(.*?)\n\s*```', text, re.DOTALL)
+    if code_block:
+        return code_block.group(1).strip()
+    depth = 0
+    start = None
+    for i, ch in enumerate(text):
+        if ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and start is not None:
+                candidate = text[start:i + 1]
+                try:
+                    json.loads(candidate)
+                    return candidate
+                except json.JSONDecodeError:
+                    start = None
+    return None
+
+
 def _generate_source_id(
     source_url: str, title_en: str,
     start_date: str | None, start_time: str | None, address: str,
@@ -168,6 +259,98 @@ class AIEngine:
             max_tokens=settings.KIMI_MAX_TOKENS,
         )
 
+    async def extract_list_events(
+        self, raw_html: str, city_slug: str, source: str, page_url: str,
+    ) -> list[dict]:
+        """从列表页 HTML 中用 LLM 提取活动摘要，替代 CSS 选择器"""
+        city_name = CITIES[city_slug]["eng_name"]
+        clean_html = html_preclean(raw_html, max_chars=20000)
+
+        response = await self.client.messages.create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            messages=[{
+                "role": "user",
+                "content": EXTRACT_LIST_PROMPT.format(
+                    city_name=city_name,
+                    source=source,
+                    page_url=page_url,
+                    raw_html=clean_html,
+                ),
+            }],
+        )
+
+        text = response.content[0].text
+        json_text = _extract_json(text)
+        if not json_text:
+            logger.warning(f"No JSON found in list extraction for {page_url}")
+            return []
+
+        result = json.loads(json_text)
+        events = result.get("events", [])
+        logger.info(f"LLM extracted {len(events)} events from {page_url}")
+        return events
+
+    async def filter_activities(
+        self, city_slug: str, summaries: list[dict],
+    ) -> list[dict]:
+        """根据列表页摘要批量过滤活动，返回 worth_fetching=true 的条目"""
+        if not summaries:
+            return []
+
+        city_name = CITIES[city_slug]["eng_name"]
+        items = []
+        for i, s in enumerate(summaries, 1):
+            items.append(
+                f"{i}. 标题: {s.get('title', '')}\n"
+                f"   日期: {s.get('date', '')}\n"
+                f"   地址: {s.get('address', '')}\n"
+                f"   价格: {s.get('price', '')}\n"
+                f"   描述: {s.get('description', '')[:200]}"
+            )
+
+        try:
+            response = await self.client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                messages=[{
+                    "role": "user",
+                    "content": FILTER_PROMPT.format(
+                        city_name=city_name,
+                        items="\n\n".join(items),
+                    ),
+                }],
+            )
+            text = response.content[0].text
+            json_text = _extract_json(text)
+            if not json_text:
+                logger.warning(f"No JSON found in filter response for {city_slug}")
+                return summaries
+
+            result = json.loads(json_text)
+            results = result.get("results", [])
+
+            # 将 AI 判断结果和中文翻译附加到每个摘要
+            for r in results:
+                idx = r.get("index", 0) - 1
+                if 0 <= idx < len(summaries):
+                    summaries[idx]["worth_fetching"] = r.get("worth_fetching", False)
+                    summaries[idx]["reason"] = r.get("reason", "")
+                    summaries[idx]["title_zh"] = r.get("title_zh", "")
+                    summaries[idx]["description_zh"] = r.get("description_zh", "")
+
+            worth_count = sum(1 for s in summaries if s.get("worth_fetching"))
+            skipped = len(summaries) - worth_count
+            logger.info(f"AI filter: {len(summaries)} -> {worth_count} worth fetching (skipped {skipped}) for {city_slug}")
+            return summaries
+
+        except Exception as e:
+            logger.error(f"AI filter failed for {city_slug}: {e}")
+            for s in summaries:
+                s.setdefault("worth_fetching", False)
+                s.setdefault("reason", "AI 过滤失败，默认跳过")
+            return summaries
+
     async def process(self, raw_page: RawPage) -> list[ProcessedActivity]:
         """处理一个原始页面，返回提取到的活动列表"""
         city_name = CITIES[raw_page.city_slug]["eng_name"]
@@ -188,31 +371,7 @@ class AIEngine:
         )
 
         text = response.content[0].text
-        # 提取 JSON：优先提取 ```json ``` 代码块，回退到第一个完整 JSON 对象
-        json_text = None
-        code_block = re.search(r'```(?:json)?\s*\n(.*?)\n\s*```', text, re.DOTALL)
-        if code_block:
-            json_text = code_block.group(1).strip()
-        else:
-            # 逐层匹配花括号，找到第一个有效 JSON 对象
-            depth = 0
-            start = None
-            for i, ch in enumerate(text):
-                if ch == '{':
-                    if depth == 0:
-                        start = i
-                    depth += 1
-                elif ch == '}':
-                    depth -= 1
-                    if depth == 0 and start is not None:
-                        candidate = text[start:i + 1]
-                        try:
-                            json.loads(candidate)
-                            json_text = candidate
-                            break
-                        except json.JSONDecodeError:
-                            start = None
-
+        json_text = _extract_json(text)
         if not json_text:
             logger.warning(f"No JSON found in LLM response for {raw_page.source_url}")
             return []
