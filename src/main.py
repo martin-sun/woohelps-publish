@@ -112,6 +112,7 @@ async def fetch_selected_details(
                 html_hash = compute_html_hash(raw_page.raw_html)
                 cached = await db.get_processed_page(raw_page.source, raw_page.source_url)
                 if cached and cached["html_hash"] == html_hash and cached["status"] in ("success", "empty"):
+                    await db.mark_candidate_fetched(cand["id"])
                     continue
 
                 activities = await ai_engine.process(raw_page)
@@ -119,12 +120,12 @@ async def fetch_selected_details(
                 new_count = 0
                 saved_activity_id = None
                 for activity in activities:
-                    if not activity.start_time_utc or activity.start_time_utc > end_date:
-                        continue
                     if await db.exists(activity.source, activity.source_id):
+                        logger.info(f"[dedup] skipped by exists: source={activity.source}, source_id={activity.source_id}")
                         continue
                     activity.content_hash = compute_content_hash(activity)
                     if await db.exists_content_hash(activity.city_slug, activity.content_hash):
+                        logger.info(f"[dedup] skipped by content_hash: city={activity.city_slug}")
                         continue
 
                     fee_amount, fee_parsed_free = parse_fee_amount(activity.price)

@@ -140,6 +140,9 @@ async def activities_page(request: Request, city: str = "", status: str = "", so
     limit = 50
     activities = await db.list_activities(city_slug, status_filter, source_filter, limit=limit, offset=0)
     total = await db.count_activities(city_slug, status_filter, source_filter)
+    logger.info(f"[activities] city={city_slug}, status={status_filter}, source={source_filter}, total={total}, returned={len(activities)}")
+    if activities:
+        logger.info(f"[activities] first record: id={activities[0].get('id')}, source={activities[0].get('source')}, title={activities[0].get('title_zh', '')[:30]}")
     total_pages = max(1, (total + limit - 1) // limit)
     return templates.TemplateResponse(request, "activities.html", {
         "activities": activities,
@@ -432,7 +435,8 @@ async def candidates_select(request: Request):
     candidate_ids = [int(x) for x in form.getlist("candidate_ids")]
     if candidate_ids:
         await db.update_candidate_status(candidate_ids, "selected")
-    return RedirectResponse(url="/candidates", status_code=303)
+    referer = request.headers.get("referer", "/candidates")
+    return RedirectResponse(url=referer, status_code=303)
 
 
 @app.post("/candidates/reject")
@@ -442,7 +446,8 @@ async def candidates_reject(request: Request):
     candidate_ids = [int(x) for x in form.getlist("candidate_ids")]
     if candidate_ids:
         await db.update_candidate_status(candidate_ids, "rejected")
-    return RedirectResponse(url="/candidates", status_code=303)
+    referer = request.headers.get("referer", "/candidates")
+    return RedirectResponse(url=referer, status_code=303)
 
 
 @app.post("/candidates/delete")
@@ -452,7 +457,8 @@ async def candidates_delete(request: Request):
     candidate_ids = [int(x) for x in form.getlist("candidate_ids")]
     if candidate_ids:
         await db.delete_candidates(candidate_ids)
-    return RedirectResponse(url="/candidates", status_code=303)
+    referer = request.headers.get("referer", "/candidates")
+    return RedirectResponse(url=referer, status_code=303)
 
 
 _fetch_guard = asyncio.Lock()
@@ -465,9 +471,8 @@ async def candidates_fetch_details(request: Request):
 
     db = _get_db()
     form = await request.form()
-    city = form.get("city", "")
-    if not city:
-        return HTMLResponse("请选择城市", status_code=400)
+    city = form.get("city", "") or None
+    logger.info(f"[fetch-details] city={city!r}")
 
     start_date_str = form.get("start_date", "")
     end_date_str = form.get("end_date", "")
@@ -496,7 +501,8 @@ async def candidates_fetch_details(request: Request):
             _fetch_running = False
 
     asyncio.create_task(_run())
-    return RedirectResponse(url=f"/candidates?city={city}", status_code=303)
+    redirect_url = f"/candidates?city={city}" if city else "/candidates"
+    return RedirectResponse(url=redirect_url, status_code=303)
 
 
 if __name__ == "__main__":

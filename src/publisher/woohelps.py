@@ -42,14 +42,17 @@ class WoohelpsPublisher:
 
     async def fetch_city_mapping(self):
         """启动时调用平台 API 获取城市 ID 映射"""
+        headers = {"LOGIN-SESSION": self.login_session}
         resp = await self.client.get(
-            f"{self.base_url}/api/applet/city/hot/get/",
-            headers={"LOGIN_SESSION": self.login_session},
+            f"{self.base_url}/api/applet/city/hot/get",
+            headers=headers,
         )
         data = resp.json()
-        cities = data.get("data", data) if isinstance(data, dict) else data
-        if isinstance(cities, list):
-            for city in cities:
+        # 响应结构: {"countries": [{"cities": [...]}]}
+        cities = []
+        for country in data.get("countries", []):
+            cities.extend(country.get("cities", []))
+        for city in cities:
                 eng_name = city.get("eng_name") or city.get("city_eng_name", "")
                 city_id = city.get("id") or city.get("city_id")
                 if eng_name and city_id:
@@ -78,11 +81,11 @@ class WoohelpsPublisher:
             "remind_type": 1,
             "groupon_type": 1,
         }
-        headers = {"LOGIN_SESSION": self.login_session}
+        headers = {"LOGIN-SESSION": self.login_session}
 
         for attempt in range(3):
             response = await self.client.post(
-                f"{self.base_url}/api/applet/activity/release/",
+                f"{self.base_url}/api/applet/activity/release",
                 data=data,
                 headers=headers,
             )
