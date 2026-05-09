@@ -1,4 +1,5 @@
 import json
+import os
 
 import aiosqlite
 from datetime import datetime
@@ -90,6 +91,31 @@ CREATE INDEX IF NOT EXISTS idx_activities_status ON activities(status);
 CREATE INDEX IF NOT EXISTS idx_activities_start_time ON activities(start_time);
 CREATE INDEX IF NOT EXISTS idx_activities_content_hash ON activities(city_slug, content_hash);
 CREATE INDEX IF NOT EXISTS idx_processed_pages_source ON processed_pages(source);
+
+CREATE TABLE IF NOT EXISTS candidate_activities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    city_slug TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    title_zh TEXT DEFAULT '',
+    event_date TEXT,
+    address TEXT DEFAULT '',
+    price TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    description_zh TEXT DEFAULT '',
+    ai_worth_fetching INTEGER,
+    ai_reason TEXT,
+    human_status TEXT NOT NULL DEFAULT 'pending',
+    fetched_detail INTEGER NOT NULL DEFAULT 0,
+    activity_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(source, source_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidates_city ON candidate_activities(city_slug);
+CREATE INDEX IF NOT EXISTS idx_candidates_status ON candidate_activities(human_status);
+CREATE INDEX IF NOT EXISTS idx_candidates_source ON candidate_activities(source);
 """
 
 
@@ -99,11 +125,23 @@ class Database:
         self._db: aiosqlite.Connection | None = None
 
     async def init(self):
+        os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.executescript(_CREATE_TABLES)
         await self._db.commit()
+
+        # 迁移：为已有表添加新列
+        for col, ddl in [
+            ("title_zh", "ALTER TABLE candidate_activities ADD COLUMN title_zh TEXT DEFAULT ''"),
+            ("description_zh", "ALTER TABLE candidate_activities ADD COLUMN description_zh TEXT DEFAULT ''"),
+        ]:
+            try:
+                await self._db.execute(ddl)
+                await self._db.commit()
+            except Exception:
+                pass  # 列已存在
 
     async def close(self):
         if self._db:
@@ -182,6 +220,15 @@ class Database:
             (city_slug, content_hash),
         )
         return await cursor.fetchone() is not None
+
+    async def delete_activities(self, ids: list[int]) -> None:
+        if not ids:
+            return
+        placeholders = ",".join("?" * len(ids))
+        await self._db.execute(
+            f"DELETE FROM activities WHERE id IN ({placeholders})", ids,
+        )
+        await self._db.commit()
 
     async def mark_published(self, source: str, source_id: str, platform_id: int):
         await self._db.execute(
@@ -287,3 +334,270 @@ class Database:
             args,
         )
         await self._db.commit()
+
+    async def complete_scrape_task(self, task_id: int):
+        await self._db.execute(
+            """UPDATE scrape_tasks SET status = 'completed', completed_at = datetime('now') WHERE id = ?""",
+            (task_id,),
+        )
+        await self._db.commit()
+
+    async def fail_scrape_task(self, task_id: int, error: str):
+        await self._db.execute(
+            """UPDATE scrape_tasks SET status = 'failed', error_message = ?, completed_at = datetime('now') WHERE id = ?""",
+            (error, task_id),
+        )
+        await self._db.commit()
+
+    async def delete_scrape_task(self, task_id: int):
+        await self._db.execute("DELETE FROM scrape_tasks WHERE id = ?", (task_id,))
+        await self._db.commit()
+
+    async def clear_scrape_tasks(self):
+        await self._db.execute("DELETE FROM scrape_tasks")
+        await self._db.commit()
+
+    async def get_scrape_task(self, task_id: int) -> dict | None:
+        cursor = await self._db.execute(
+            "SELECT * FROM scrape_tasks WHERE id = ?", (task_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def list_recent_scrape_tasks(self, limit: int = 20) -> list[dict]:
+        cursor = await self._db.execute(
+            "SELECT * FROM scrape_tasks ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Activity Queries (Admin UI) ---
+
+    async def list_activities(
+        self,
+        city_slug: str | None = None,
+        status: str | None = None,
+        source: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        conditions, args = [], []
+        if city_slug:
+            conditions.append("city_slug = ?")
+            args.append(city_slug)
+        if status:
+            conditions.append("status = ?")
+            args.append(status)
+        if source:
+            conditions.append("source = ?")
+            args.append(source)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(
+            f"SELECT * FROM activities {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            args + [limit, offset],
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def count_activities(
+        self,
+        city_slug: str | None = None,
+        status: str | None = None,
+        source: str | None = None,
+    ) -> int:
+        conditions, args = [], []
+        if city_slug:
+            conditions.append("city_slug = ?")
+            args.append(city_slug)
+        if status:
+            conditions.append("status = ?")
+            args.append(status)
+        if source:
+            conditions.append("source = ?")
+            args.append(source)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(
+            f"SELECT COUNT(*) FROM activities {where}", args,
+        )
+        row = await cursor.fetchone()
+        return row[0]
+
+    async def get_activity(self, activity_id: int) -> dict | None:
+        cursor = await self._db.execute(
+            "SELECT * FROM activities WHERE id = ?", (activity_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def count_by_city_and_status(self) -> dict[str, dict]:
+        cursor = await self._db.execute(
+            "SELECT city_slug, status, COUNT(*) as cnt FROM activities GROUP BY city_slug, status",
+        )
+        rows = await cursor.fetchall()
+        result: dict[str, dict] = {}
+        for r in rows:
+            city = r["city_slug"]
+            if city not in result:
+                result[city] = {"total": 0}
+            result[city][r["status"]] = r["cnt"]
+            result[city]["total"] += r["cnt"]
+        return result
+
+    async def get_activities_by_ids(self, ids: list[int]) -> list[dict]:
+        if not ids:
+            return []
+        placeholders = ",".join("?" * len(ids))
+        cursor = await self._db.execute(
+            f"SELECT * FROM activities WHERE id IN ({placeholders})", ids,
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    # --- Candidate Activities ---
+
+    async def save_candidates(self, candidates: list[dict]) -> int:
+        """批量保存候选活动，返回插入/更新数量"""
+        if not candidates:
+            return 0
+        rows = [
+            (
+                c["city_slug"], c["source"], c["source_url"], c.get("title", ""),
+                c.get("title_zh", ""), c.get("event_date", ""), c.get("address", ""),
+                c.get("price", ""), c.get("description", ""), c.get("description_zh", ""),
+                c.get("ai_worth_fetching"), c.get("ai_reason", ""),
+            )
+            for c in candidates
+        ]
+        await self._db.executemany(
+            """INSERT INTO candidate_activities (
+                city_slug, source, source_url, title, title_zh, event_date,
+                address, price, description, description_zh, ai_worth_fetching, ai_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source, source_url) DO UPDATE SET
+                title=excluded.title,
+                title_zh=excluded.title_zh,
+                event_date=excluded.event_date,
+                address=excluded.address,
+                price=excluded.price,
+                description=excluded.description,
+                description_zh=excluded.description_zh,
+                ai_worth_fetching=excluded.ai_worth_fetching,
+                ai_reason=excluded.ai_reason
+            """,
+            rows,
+        )
+        await self._db.commit()
+        return len(rows)
+
+    async def list_candidates(
+        self,
+        city_slug: str | None = None,
+        ai_worth: bool | None = None,
+        human_status: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        conditions, args = [], []
+        if city_slug:
+            conditions.append("city_slug = ?")
+            args.append(city_slug)
+        if ai_worth is not None:
+            conditions.append("ai_worth_fetching = ?")
+            args.append(1 if ai_worth else 0)
+        if human_status:
+            conditions.append("human_status = ?")
+            args.append(human_status)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(
+            f"SELECT * FROM candidate_activities {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            args + [limit, offset],
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def count_candidates(
+        self,
+        city_slug: str | None = None,
+        ai_worth: bool | None = None,
+        human_status: str | None = None,
+    ) -> int:
+        conditions, args = [], []
+        if city_slug:
+            conditions.append("city_slug = ?")
+            args.append(city_slug)
+        if ai_worth is not None:
+            conditions.append("ai_worth_fetching = ?")
+            args.append(1 if ai_worth else 0)
+        if human_status:
+            conditions.append("human_status = ?")
+            args.append(human_status)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        cursor = await self._db.execute(
+            f"SELECT COUNT(*) FROM candidate_activities {where}", args,
+        )
+        row = await cursor.fetchone()
+        return row[0]
+
+    async def update_candidate_status(self, ids: list[int], status: str) -> None:
+        if not ids:
+            return
+        placeholders = ",".join("?" * len(ids))
+        await self._db.execute(
+            f"UPDATE candidate_activities SET human_status = ? WHERE id IN ({placeholders})",
+            [status] + ids,
+        )
+        await self._db.commit()
+
+    async def delete_candidates(self, ids: list[int]) -> None:
+        if not ids:
+            return
+        placeholders = ",".join("?" * len(ids))
+        await self._db.execute(
+            f"DELETE FROM candidate_activities WHERE id IN ({placeholders})", ids,
+        )
+        await self._db.commit()
+
+    async def mark_candidate_fetched(self, candidate_id: int, activity_id: int | None = None) -> None:
+        await self._db.execute(
+            """UPDATE candidate_activities
+               SET fetched_detail = 1, activity_id = ? WHERE id = ?""",
+            (activity_id, candidate_id),
+        )
+        await self._db.commit()
+
+    async def get_candidates_to_fetch(
+        self, city_slug: str | None = None,
+    ) -> list[dict]:
+        conditions = ["human_status = 'selected'", "fetched_detail = 0"]
+        args = []
+        if city_slug:
+            conditions.append("city_slug = ?")
+            args.append(city_slug)
+        where = f"WHERE {' AND '.join(conditions)}"
+        cursor = await self._db.execute(
+            f"SELECT * FROM candidate_activities {where} ORDER BY id", args,
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def get_candidate(self, candidate_id: int) -> dict | None:
+        cursor = await self._db.execute(
+            "SELECT * FROM candidate_activities WHERE id = ?", (candidate_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def count_candidates_by_city(self) -> dict[str, dict]:
+        cursor = await self._db.execute(
+            "SELECT city_slug, human_status, COUNT(*) as cnt FROM candidate_activities GROUP BY city_slug, human_status",
+        )
+        rows = await cursor.fetchall()
+        result: dict[str, dict] = {}
+        for r in rows:
+            city = r["city_slug"]
+            if city not in result:
+                result[city] = {"total": 0}
+            result[city][r["human_status"]] = r["cnt"]
+            result[city]["total"] += r["cnt"]
+        return result
