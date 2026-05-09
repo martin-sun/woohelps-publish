@@ -4,7 +4,6 @@ from playwright.async_api import async_playwright
 
 from loguru import logger
 
-from src.models.activity import RawPage
 from src.scrapers.base import BaseScraper
 
 FAMILYFUN_CITY_SLUGS = {
@@ -15,6 +14,7 @@ FAMILYFUN_CITY_SLUGS = {
     "ottawa": "ottawa",
     "winnipeg": "winnipeg",
     "montreal": "montreal",
+    "saskatoon": "saskatoon",
 }
 
 
@@ -25,9 +25,11 @@ class FamilyFunCanadaScraper(BaseScraper):
     def supported_cities(self) -> set[str]:
         return set(FAMILYFUN_CITY_SLUGS.keys())
 
-    async def fetch_pages(
-        self, city_slug: str, start_date: datetime, end_date: datetime
-    ) -> list[RawPage]:
+    async def discover_pages(
+        self, city_slug: str, start_date: datetime, end_date: datetime,
+        ai_engine=None,
+    ) -> list[dict]:
+        """只抓列表页，返回文章 URL 列表（摘要信息有限，以 URL 为主）"""
         slug = FAMILYFUN_CITY_SLUGS.get(city_slug)
         if not slug:
             return []
@@ -39,10 +41,13 @@ class FamilyFunCanadaScraper(BaseScraper):
             city_url = f"{self.BASE_URL}/{slug}/"
             await self._goto(page, city_url)
             article_urls = await self._collect_links(
-                page, rf"familyfuncanada\.com/{slug}/[^/]+/.*/$"
+                page, rf"familyfuncanada\.com/{slug}/[^/]+/$"
             )
 
-            skip_patterns = ["/category/", "/tag/", "/calendar/", "/page/"]
+            skip_patterns = [
+                "/category/", "/tag/", "/calendar/", "/page/",
+                "/feed/", "/files/", "/wp-content/", "/wp-json/",
+            ]
             article_urls = [
                 u for u in article_urls
                 if not any(p in u for p in skip_patterns)
@@ -54,30 +59,18 @@ class FamilyFunCanadaScraper(BaseScraper):
                 if not resp or resp.status == 404:
                     break
                 more = await self._collect_links(
-                    page, rf"familyfuncanada\.com/{slug}/[^/]+/.*/$"
+                    page, rf"familyfuncanada\.com/{slug}/[^/]+/$"
                 )
                 more = [u for u in more if not any(p in u for p in skip_patterns)]
                 article_urls.extend(more)
 
             article_urls = list(set(article_urls))
-            logger.info(f"FamilyFunCanada {city_slug}: found {len(article_urls)} articles")
-
-            pages = []
-            for url in article_urls:
-                await self._delay()
-                detail_page = await browser.new_page()
-                await self._goto(detail_page, url)
-                html = await detail_page.content()
-                og_image = await self._get_og_image(detail_page)
-                await detail_page.close()
-
-                pages.append(RawPage(
-                    source="familyfuncanada",
-                    source_url=url,
-                    raw_html=html,
-                    city_slug=city_slug,
-                    image_url=og_image,
-                ))
-
+            logger.info(f"FamilyFunCanada {city_slug}: discovered {len(article_urls)} articles")
             await browser.close()
-        return pages
+
+            # 返回简单摘要（标题从 URL 提取，详情页再补全）
+            return [
+                {"url": url, "title": url.rstrip("/").split("/")[-1].replace("-", " ").title()}
+                for url in article_urls
+            ]
+

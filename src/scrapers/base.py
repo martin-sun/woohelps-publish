@@ -1,12 +1,10 @@
 import asyncio
 import random
-from abc import ABC, abstractmethod
-from datetime import datetime
+from abc import ABC
 
-from playwright.async_api import async_playwright, Page
+from playwright.async_api import Page
 
 from src.config.settings import CITIES
-from src.models.activity import RawPage
 
 # Playwright 配置
 NAVIGATION_TIMEOUT = 30_000  # 30 seconds
@@ -15,12 +13,6 @@ REQUEST_DELAY_RANGE = (2, 5)  # 随机延迟范围（秒）
 
 class BaseScraper(ABC):
     """爬虫基类 — 只负责页面导航和抓取原始 HTML"""
-
-    @abstractmethod
-    async def fetch_pages(
-        self, city_slug: str, start_date: datetime, end_date: datetime
-    ) -> list[RawPage]:
-        ...
 
     @property
     def supported_cities(self) -> set[str]:

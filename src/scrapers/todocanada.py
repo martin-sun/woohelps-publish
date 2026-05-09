@@ -1,10 +1,10 @@
+import re
 from datetime import datetime
 
 from playwright.async_api import async_playwright
 
 from loguru import logger
 
-from src.models.activity import RawPage
 from src.scrapers.base import BaseScraper
 
 TODOCANADA_CITY_SLUGS = {
@@ -28,9 +28,67 @@ class TodoCanadaScraper(BaseScraper):
     def supported_cities(self) -> set[str]:
         return set(TODOCANADA_CITY_SLUGS.keys())
 
-    async def fetch_pages(
-        self, city_slug: str, start_date: datetime, end_date: datetime
-    ) -> list[RawPage]:
+    @staticmethod
+    async def _get_max_page(page) -> int | None:
+        """从分页控件读取最大页码，没有则返回 None"""
+        # 优先找 "Last Page" 链接
+        last_link = await page.query_selector("a.last.page-numbers")
+        if last_link:
+            href = await last_link.get_attribute("href") or ""
+            m = re.search(r"/page/(\d+)/", href)
+            if m:
+                return int(m.group(1))
+
+        # 否则从所有页码数字中取最大
+        nums = await page.eval_on_selector_all(
+            ".page-numbers",
+            "els => els.map(el => parseInt(el.textContent)).filter(n => !isNaN(n))",
+        )
+        return max(nums) if nums else None
+
+    @staticmethod
+    async def _extract_list_summaries(page) -> list[dict]:
+        """从列表页提取所有活动摘要信息"""
+        cards = await page.query_selector_all("article, .event-item, .event-listing-item")
+        summaries = []
+        seen_urls = set()
+        for card in cards:
+            # 找卡片内的 event 链接
+            link_el = await card.query_selector('a[href*="/event/"]')
+            if not link_el:
+                continue
+            href = await link_el.get_attribute("href")
+            if not href or href in seen_urls:
+                continue
+            seen_urls.add(href)
+
+            title_el = await card.query_selector(".event-title h2, .entry-title")
+            date_el = await card.query_selector(".event_date, [itemprop='startDate']")
+            addr_el = await card.query_selector(".address, [itemprop='address']")
+            price_el = await card.query_selector(".ampprice")
+            desc_el = await card.query_selector(".entry-summary, .entry-content p")
+
+            title = await title_el.inner_text() if title_el else ""
+            date = await date_el.inner_text() if date_el else ""
+            address = await addr_el.inner_text() if addr_el else ""
+            price = await price_el.inner_text() if price_el else ""
+            description = await desc_el.inner_text() if desc_el else ""
+
+            summaries.append({
+                "url": href,
+                "title": title.strip(),
+                "date": date.strip(),
+                "address": address.strip(),
+                "price": price.strip(),
+                "description": description.strip(),
+            })
+        return summaries
+
+    async def discover_pages(
+        self, city_slug: str, start_date: datetime, end_date: datetime,
+        ai_engine=None,
+    ) -> list[dict]:
+        """只抓列表页，返回活动摘要列表（含 url/title/date/address/price/description）"""
         slug = TODOCANADA_CITY_SLUGS.get(city_slug)
         if not slug:
             return []
@@ -51,41 +109,29 @@ class TodoCanadaScraper(BaseScraper):
             page = await context.new_page()
             await self._goto(page, list_url)
 
-            detail_urls = await self._collect_links(
-                page, rf"todocanada\.ca/city/{slug}/event/[^/]+/.*/?$"
-            )
+            all_summaries: list[dict] = []
+            page_1_summaries = await self._extract_list_summaries(page)
+            all_summaries.extend(page_1_summaries)
 
-            # 处理分页
-            for page_num in range(2, 27):
+            max_page = await self._get_max_page(page)
+            if max_page is None:
+                max_page = 26
+            logger.info(f"TodoCanada {city_slug}: max page = {max_page}")
+
+            for page_num in range(2, max_page + 1):
                 next_url = f"{self.BASE_URL}/city/{slug}/events/page/{page_num}/"
                 resp = await page.goto(next_url, wait_until="domcontentloaded", timeout=30_000)
-                if not resp or resp.status == 404:
+                if not resp or resp.status in (404, 403):
                     break
-                more = await self._collect_links(
-                    page, rf"todocanada\.ca/city/{slug}/event/[^/]+/.*/?$"
-                )
-                detail_urls.extend(more)
+                summaries = await self._extract_list_summaries(page)
+                new_urls = {s["url"] for s in summaries} - {s["url"] for s in all_summaries}
+                if not new_urls:
+                    break
+                all_summaries.extend(s for s in summaries if s["url"] in new_urls)
 
-            detail_urls = list(set(detail_urls))
-            logger.info(f"TodoCanada {city_slug}: found {len(detail_urls)} detail pages")
-
-            pages = []
-            for url in detail_urls:
-                await self._delay()
-                detail_page = await context.new_page()
-                await self._goto(detail_page, url)
-                html = await detail_page.content()
-                og_image = await self._get_og_image(detail_page)
-                await detail_page.close()
-
-                pages.append(RawPage(
-                    source="todocanada",
-                    source_url=url,
-                    raw_html=html,
-                    city_slug=city_slug,
-                    image_url=og_image,
-                ))
+            logger.info(f"TodoCanada {city_slug}: discovered {len(all_summaries)} summaries")
 
             await context.close()
             await browser.close()
-        return pages
+        return all_summaries
+
