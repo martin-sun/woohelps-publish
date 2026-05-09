@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 import signal
 from datetime import datetime, timedelta, timezone
 
@@ -10,7 +11,7 @@ from src.ai.engine import AIEngine
 from src.ai.sanitizer import sanitize_html
 from src.config.settings import CITIES, get_settings
 from src.dedup.deduplicator import compute_content_hash, compute_html_hash
-from src.publisher.woohelps import parse_fee_amount
+from src.publisher.woohelps import WoohelpsPublisher, parse_fee_amount
 from src.scrapers.familyfun import FamilyFunCanadaScraper
 from src.scrapers.saskatoon import DiscoverSaskatoonScraper
 from src.scrapers.todocanada import TodoCanadaScraper
@@ -23,79 +24,220 @@ SCRAPERS = {
 }
 
 
-async def fetch_all_pages(
-    city_slug: str, start_date: datetime, end_date: datetime
-) -> list:
-    """从所有数据源抓取原始页面"""
-    all_pages = []
+async def discover_city(
+    city_slug: str, start_date: datetime, end_date: datetime,
+    db: Database, ai_engine: AIEngine,
+):
+    """只抓列表页摘要，AI 过滤，存入 candidate_activities"""
+    logger.info(f"Discovering city: {city_slug}")
+
     for name, scraper_cls in SCRAPERS.items():
         scraper = scraper_cls()
         if city_slug not in scraper.supported_cities:
             continue
         try:
-            pages = await scraper.fetch_pages(city_slug, start_date, end_date)
-            all_pages.extend(pages)
+            summaries = await scraper.discover_pages(city_slug, start_date, end_date, ai_engine=ai_engine)
         except Exception as e:
-            logger.error(f"Scraper {name} failed for {city_slug}: {e}")
-    return all_pages
+            logger.error(f"Discover {name} failed for {city_slug}: {e}")
+            continue
+
+        if not summaries:
+            continue
+
+        logger.info(f"{city_slug}/{name}: discovered {len(summaries)} summaries")
+
+        if ai_engine:
+            try:
+                summaries = await ai_engine.filter_activities(city_slug, summaries)
+                logger.info(f"{city_slug}/{name}: AI filtered to {len(summaries)} summaries")
+            except Exception as e:
+                logger.error(f"AI filter failed for {city_slug}: {e}")
+
+        # 转换为 candidate 格式并入库
+        candidates = []
+        for s in summaries:
+            candidates.append({
+                "city_slug": city_slug,
+                "source": name,
+                "source_url": s["url"],
+                "title": s.get("title", ""),
+                "title_zh": s.get("title_zh", ""),
+                "event_date": s.get("date", ""),
+                "address": s.get("address", ""),
+                "price": s.get("price", ""),
+                "description": s.get("description", ""),
+                "description_zh": s.get("description_zh", ""),
+                "ai_worth_fetching": 1 if s.get("worth_fetching", True) else 0,
+                "ai_reason": s.get("reason", ""),
+            })
+
+        count = await db.save_candidates(candidates)
+        logger.info(f"{city_slug}/{name}: saved {count} candidates")
 
 
-async def process_city(
+async def fetch_selected_details(
     city_slug: str, start_date: datetime, end_date: datetime,
     db: Database, ai_engine: AIEngine,
 ):
-    """处理单个城市：抓取 → AI 处理 → 去重 → 存储"""
-    logger.info(f"Processing city: {city_slug}")
+    """从 candidate_activities 读取人工选中的活动，抓详情 + AI 处理 + 存储"""
+    candidates = await db.get_candidates_to_fetch(city_slug)
+    if not candidates:
+        logger.info(f"No selected candidates to fetch for {city_slug}")
+        return
 
-    raw_pages = await fetch_all_pages(city_slug, start_date, end_date)
-    logger.info(f"{city_slug}: fetched {len(raw_pages)} raw pages")
+    logger.info(f"{city_slug}: fetching {len(candidates)} selected detail pages")
 
-    for page in raw_pages:
-        html_hash = compute_html_hash(page.raw_html)
-        cached = await db.get_processed_page(page.source, page.source_url)
-        if cached and cached["html_hash"] == html_hash and cached["status"] in ("success", "empty"):
-            continue
+    from playwright.async_api import async_playwright
 
-        try:
-            activities = await ai_engine.process(page)
-        except Exception as e:
-            await db.save_processed_page(page.source, page.source_url, html_hash, "failed")
-            logger.error(f"LLM processing failed for {page.source_url}: {e}")
-            continue
-
-        new_count = 0
-        for activity in activities:
-            if not activity.start_time_utc:
-                continue
-            if activity.start_time_utc > end_date:
-                continue
-
-            if await db.exists(activity.source, activity.source_id):
-                continue
-
-            activity.content_hash = compute_content_hash(activity)
-            if await db.exists_content_hash(activity.city_slug, activity.content_hash):
-                continue
-
-            fee_amount, fee_parsed_free = parse_fee_amount(activity.price)
-            activity.fee_amount = fee_amount
-            activity.fee_parsed_free = fee_parsed_free
-
-            activity.html_zh = sanitize_html(activity.html_zh, page.source_url)
-
-            await db.save(activity)
-            new_count += 1
-
-        await db.save_processed_page(
-            page.source, page.source_url, html_hash,
-            "success" if activities else "empty",
-            activity_count=len(activities),
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
         )
-        logger.info(f"{city_slug}/{page.source}: {len(activities)} activities, {new_count} new")
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+        )
+
+        for cand in candidates:
+            try:
+                raw_page = await _fetch_single_page(
+                    context, cand["source"], cand["source_url"], cand["city_slug"],
+                )
+                if not raw_page:
+                    continue
+
+                html_hash = compute_html_hash(raw_page.raw_html)
+                cached = await db.get_processed_page(raw_page.source, raw_page.source_url)
+                if cached and cached["html_hash"] == html_hash and cached["status"] in ("success", "empty"):
+                    continue
+
+                activities = await ai_engine.process(raw_page)
+
+                new_count = 0
+                saved_activity_id = None
+                for activity in activities:
+                    if not activity.start_time_utc or activity.start_time_utc > end_date:
+                        continue
+                    if await db.exists(activity.source, activity.source_id):
+                        continue
+                    activity.content_hash = compute_content_hash(activity)
+                    if await db.exists_content_hash(activity.city_slug, activity.content_hash):
+                        continue
+
+                    fee_amount, fee_parsed_free = parse_fee_amount(activity.price)
+                    activity.fee_amount = fee_amount
+                    activity.fee_parsed_free = fee_parsed_free
+                    activity.html_zh = sanitize_html(activity.html_zh, raw_page.source_url)
+
+                    saved_activity_id = await db.save(activity)
+                    new_count += 1
+
+                    await db.mark_candidate_fetched(cand["id"], saved_activity_id)
+
+                # 即使没有新 activity 插入，也标记已处理，避免重复抓取
+                if new_count == 0:
+                    await db.mark_candidate_fetched(cand["id"])
+
+                await db.save_processed_page(
+                    raw_page.source, raw_page.source_url, html_hash,
+                    "success" if activities else "empty",
+                    activity_count=len(activities),
+                )
+                logger.info(f"{city_slug}/{cand['source_url']}: {len(activities)} activities, {new_count} new")
+
+            except Exception as e:
+                logger.error(f"Fetch detail failed for {cand['source_url']}: {e}")
+
+        await context.close()
+        await browser.close()
+
+
+async def _fetch_single_page(context, source: str, url: str, city_slug: str) -> "RawPage | None":
+    """用共享的 browser context 抓取单个详情页"""
+    page = await context.new_page()
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        html = await page.content()
+        og_image = await page.query_selector('meta[property="og:image"]')
+        image_url = await og_image.get_attribute("content") if og_image else None
+    except Exception as e:
+        logger.error(f"Failed to fetch {url}: {e}")
+        return None
+    finally:
+        await page.close()
+
+    from src.models.activity import RawPage
+    return RawPage(
+        source=source,
+        source_url=url,
+        raw_html=html,
+        city_slug=city_slug,
+        image_url=image_url,
+    )
+
+
+async def publish_one(
+    activity_id: int, db: Database, publisher: WoohelpsPublisher,
+) -> dict:
+    """发布单个活动到海外新生活"""
+    activity = await db.get_activity(activity_id)
+    if not activity:
+        return {"error": "活动不存在"}
+    if activity["status"] == "published":
+        return {"error": "活动已发布"}
+
+    city_info = CITIES.get(activity["city_slug"])
+    if not city_info:
+        return {"error": f"未知城市: {activity['city_slug']}"}
+
+    city_id = publisher.get_city_id(city_info["eng_name"])
+    if not city_id:
+        return {"error": f"平台未找到城市: {city_info['eng_name']}"}
+
+    from src.models.activity import ProcessedActivity
+    pa = ProcessedActivity(
+        source=activity["source"],
+        source_id=activity["source_id"],
+        source_url=activity["source_url"],
+        city_slug=activity["city_slug"],
+        title_en=activity["title_en"],
+        title_zh=activity["title_zh"],
+        description_zh=activity["description_zh"],
+        html_zh=activity["html_zh"],
+        address=activity["address"],
+        venue_name=activity["venue_name"],
+        price=activity["price"],
+        is_free=bool(activity["is_free"]),
+        fee_amount=activity["fee_amount"],
+        fee_parsed_free=bool(activity["fee_parsed_free"]),
+        start_time_utc=datetime.fromisoformat(activity["start_time"]) if activity["start_time"] else None,
+        end_time_utc=datetime.fromisoformat(activity["end_time"]) if activity["end_time"] else None,
+        timezone=activity["timezone"],
+        image_url=activity["image_url"],
+        image_urls=json.loads(activity["image_urls"]) if isinstance(activity["image_urls"], str) else activity["image_urls"],
+        highlights=json.loads(activity["highlights"]) if isinstance(activity["highlights"], str) else activity["highlights"],
+        activity_type=activity["activity_type"],
+        content_hash=activity["content_hash"],
+        status=activity["status"],
+    )
+
+    result = await publisher.publish_activity(pa, city_id)
+    errcode = result.get("errcode", -1)
+    if errcode == 0 or errcode in (101, 201):
+        platform_id = result.get("data", {}).get("id") if isinstance(result.get("data"), dict) else None
+        await db.mark_published(activity["source"], activity["source_id"], platform_id or 0)
+        return {"success": True, "result": result}
+    else:
+        error_msg = result.get("errmsg", str(result))
+        await db.mark_publish_failed(activity["source"], activity["source_id"], error_msg)
+        return {"success": False, "error": error_msg, "result": result}
 
 
 async def run_once(city: str | None = None):
-    """单次运行全流程"""
+    """单次运行发现流程（列表页 + AI 过滤 → 存入候选，不自动抓详情）"""
     settings = get_settings()
 
     async with Database(settings.DB_PATH) as db:
@@ -106,9 +248,9 @@ async def run_once(city: str | None = None):
 
         cities = [city] if city else list(CITIES.keys())
         for city_slug in cities:
-            await process_city(city_slug, now, end_date, db, ai_engine)
+            await discover_city(city_slug, now, end_date, db, ai_engine)
 
-    logger.info("Run complete")
+    logger.info("Discover complete")
 
 
 async def run_scheduled():
