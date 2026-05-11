@@ -5,8 +5,8 @@
 <div class="flex items-center justify-between mb-6">
     <h1 class="text-2xl font-bold text-gray-800">Dashboard</h1>
     <div class="flex gap-3">
-        <a href="/discover" class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-700">发现新活动</a>
-        <a href="/scrape" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">抓取新活动</a>
+        <a href="/candidates" class="bg-green-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-green-700">发现新活动</a>
+        <a href="/tasks" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm hover:bg-blue-700">任务监控</a>
     </div>
 </div>
 
@@ -57,7 +57,13 @@
         {% for task in tasks %}
             <tr class="border-t hover:bg-gray-50">
                 <td class="px-4 py-2">{{ task.id }}</td>
-                <td class="px-4 py-2 text-xs">{{ task.city_slugs }}</td>
+                <td class="px-4 py-2 text-xs">
+                    {% if task.task_type == 'discover' %}<span class="text-green-600">发现</span>
+                    {% elif task.task_type == 'fetch_details' %}<span class="text-blue-600">抓取</span>
+                    {% elif task.task_type == 'refilter' %}<span class="text-yellow-600">过滤</span>
+                    {% elif task.task_type == 'publish' %}<span class="text-purple-600">发布</span>
+                    {% else %}{{ task.task_type }}{% endif %}
+                </td>
                 <td class="px-4 py-2">
                     {% if task.status == 'running' %}
                     <span class="text-blue-600">运行中</span>

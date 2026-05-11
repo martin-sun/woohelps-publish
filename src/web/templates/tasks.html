@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}任务监控 - 加拿大活动管理{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-bold text-gray-800">任务监控</h1>
+    {% if tasks %}
+    <form action="/tasks/clear" method="post" class="inline">
+        <button type="submit" class="text-xs text-red-600 hover:underline" onclick="return confirm('确定清空所有任务记录？')">清空全部</button>
+    </form>
+    {% endif %}
+</div>
+
+{% if tasks %}
+{% for task in tasks %}
+<div class="bg-white rounded-lg border mb-3{% if task.status == 'running' %} ring-2 ring-blue-200{% endif %}">
+    <div class="px-4 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-3 min-w-0">
+            {% if task.task_type == 'discover' %}
+            <span class="text-xs font-medium px-2 py-0.5 rounded bg-green-100 text-green-700 shrink-0">发现</span>
+            {% elif task.task_type == 'fetch_details' %}
+            <span class="text-xs font-medium px-2 py-0.5 rounded bg-blue-100 text-blue-700 shrink-0">抓取</span>
+            {% elif task.task_type == 'refilter' %}
+            <span class="text-xs font-medium px-2 py-0.5 rounded bg-yellow-100 text-yellow-700 shrink-0">过滤</span>
+            {% elif task.task_type == 'publish' %}
+            <span class="text-xs font-medium px-2 py-0.5 rounded bg-purple-100 text-purple-700 shrink-0">发布</span>
+            {% else %}
+            <span class="text-xs font-medium px-2 py-0.5 rounded bg-gray-100 text-gray-700 shrink-0">{{ task.task_type }}</span>
+            {% endif %}
+
+            {% if task.status == 'running' %}
+            <span class="text-sm text-blue-600 flex items-center gap-1">
+                <span class="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse"></span>
+                运行中
+            </span>
+            {% elif task.status == 'completed' %}
+            <span class="text-sm text-green-600">完成</span>
+            {% else %}
+            <span class="text-sm text-red-600">失败</span>
+            {% endif %}
+
+            {% if task.current_city %}
+            <span class="text-sm text-gray-600 truncate">{{ task.current_city }}</span>
+            {% endif %}
+        </div>
+
+        <div class="flex items-center gap-3 text-xs text-gray-500 shrink-0">
+            {% if task.task_type == 'discover' and task.city_slugs and task.city_slugs != '[]' %}
+            <span>{{ task.city_slugs }}</span>
+            {% endif %}
+
+            {% if task.total_new %}
+            <span class="text-green-600">+{{ task.total_new }}</span>
+            {% endif %}
+
+            <span class="whitespace-nowrap">{{ task.started_at[-8:] }}</span>
+            {% if task.completed_at %}
+            <span class="whitespace-nowrap">→ {{ task.completed_at[-8:] }}</span>
+            {% endif %}
+
+            {% if task.status != 'running' %}
+            <form action="/tasks/delete/{{ task.id }}" method="post" class="inline">
+                <button type="submit" class="text-red-400 hover:text-red-600" onclick="return confirm('删除？')">&#x2715;</button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if task.status == 'failed' and task.error_message %}
+    <div class="px-4 pb-3 text-xs text-red-500 break-all">{{ task.error_message }}</div>
+    {% endif %}
+</div>
+{% endfor %}
+
+<script>
+if (document.querySelector('.ring-blue-200')) {
+    setTimeout(() => htmx.ajax('GET', '/tasks', 'body'), 5000);
+}
+</script>
+{% else %}
+<div class="bg-white rounded-lg border px-4 py-8 text-center text-gray-400">暂无任务</div>
+{% endif %}
+{% endblock %}

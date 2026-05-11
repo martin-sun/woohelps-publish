@@ -155,6 +155,68 @@ async def fetch_selected_details(
         await browser.close()
 
 
+async def fetch_one_candidate(cand: dict, db: Database, ai_engine: AIEngine) -> int:
+    """抓取单个 candidate 的详情页 + AI 处理，返回新 activity 数量"""
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+        )
+        try:
+            raw_page = await _fetch_single_page(
+                context, cand["source"], cand["source_url"], cand["city_slug"],
+            )
+            if not raw_page:
+                await db.mark_candidate_fetched(cand["id"])
+                return 0
+
+            html_hash = compute_html_hash(raw_page.raw_html)
+            cached = await db.get_processed_page(raw_page.source, raw_page.source_url)
+            if cached and cached["html_hash"] == html_hash and cached["status"] in ("success", "empty"):
+                await db.mark_candidate_fetched(cand["id"])
+                return 0
+
+            activities = await ai_engine.process(raw_page)
+
+            new_count = 0
+            saved_activity_id = None
+            for activity in activities:
+                if await db.exists(activity.source, activity.source_id):
+                    continue
+                activity.content_hash = compute_content_hash(activity)
+                if await db.exists_content_hash(activity.city_slug, activity.content_hash):
+                    continue
+
+                fee_amount, fee_parsed_free = parse_fee_amount(activity.price)
+                activity.fee_amount = fee_amount
+                activity.fee_parsed_free = fee_parsed_free
+
+                saved_activity_id = await db.save(activity)
+                new_count += 1
+                await db.mark_candidate_fetched(cand["id"], saved_activity_id)
+
+            if new_count == 0:
+                await db.mark_candidate_fetched(cand["id"])
+
+            await db.save_processed_page(
+                raw_page.source, raw_page.source_url, html_hash,
+                "success" if activities else "empty",
+                activity_count=len(activities),
+            )
+            return new_count
+        finally:
+            await context.close()
+            await browser.close()
+
+
 async def _fetch_single_page(context, source: str, url: str, city_slug: str) -> "RawPage | None":
     """用共享的 browser context 抓取单个详情页"""
     page = await context.new_page()

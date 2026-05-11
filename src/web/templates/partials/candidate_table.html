@@ -1,11 +1,11 @@
 <!-- 操作栏 -->
 <div class="flex gap-3 mb-4">
-    <form action="/candidates/fetch-details" method="post" class="flex gap-2 items-center">
+    <form action="/candidates/refilter" method="post" class="flex gap-2 items-center">
         <input type="hidden" name="city" value="{{ current_city }}">
-        <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700">
-            抓取选中详情
+        <button type="submit" class="bg-yellow-600 text-white px-4 py-2 rounded text-sm hover:bg-yellow-700">
+            重新 AI 过滤
         </button>
-        <span class="text-xs text-gray-500">只对 "已选中" 且未抓详情的活动执行</span>
+        <span class="text-xs text-gray-500">重新过滤 AI 失败的条目</span>
     </form>
 </div>
 
@@ -61,6 +61,8 @@
             <td class="px-3 py-2">
                 {% if c.ai_worth_fetching == 1 %}
                 <span class="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">值得</span>
+                {% elif c.ai_worth_fetching == 0 and c.ai_reason == 'AI 过滤失败，默认跳过' %}
+                <span class="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded">判断失败</span>
                 {% elif c.ai_worth_fetching == 0 %}
                 <span class="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded">不值得</span>
                 {% else %}
@@ -71,27 +73,24 @@
                 {% endif %}
             </td>
             <td class="px-3 py-2">
-                {% if c.human_status == "pending" %}
-                <span class="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">待处理</span>
+                {% if c.fetched_detail %}
+                <span class="text-xs text-green-600">已抓详情</span>
                 {% elif c.human_status == "selected" %}
-                <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">已选中</span>
+                <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">抓取中</span>
+                {% elif c.human_status == "pending" %}
+                <span class="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">待处理</span>
                 {% elif c.human_status == "rejected" %}
                 <span class="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">已拒绝</span>
-                {% endif %}
-                {% if c.fetched_detail %}
-                <span class="text-xs text-green-600 ml-1">已抓详情</span>
                 {% endif %}
             </td>
             <td class="px-3 py-2">
                 <div class="flex gap-1 flex-wrap">
+                    {% if not c.fetched_detail and c.human_status != "selected" %}
                     <form action="/candidates/select" method="post" class="inline">
                         <input type="hidden" name="candidate_ids" value="{{ c.id }}">
-                        <button type="submit" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">选中</button>
+                        <button type="submit" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">抓取</button>
                     </form>
-                    <form action="/candidates/reject" method="post" class="inline">
-                        <input type="hidden" name="candidate_ids" value="{{ c.id }}">
-                        <button type="submit" class="text-xs bg-gray-50 text-gray-600 px-2 py-1 rounded hover:bg-gray-100">拒绝</button>
-                    </form>
+                    {% endif %}
                     <form action="/candidates/delete" method="post" class="inline" onsubmit="return confirm('确定删除？')">
                         <input type="hidden" name="candidate_ids" value="{{ c.id }}">
                         <button type="submit" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">删除</button>
@@ -121,8 +120,7 @@
     <!-- 批量操作 -->
     <div class="px-4 py-3 border-t bg-gray-50 flex gap-3 items-center">
         <span class="text-sm text-gray-500" id="cand-selected-count">已选 0 个</span>
-        <button onclick="candBatchAction('/candidates/select')" class="bg-blue-600 text-white px-4 py-1.5 rounded text-sm hover:bg-blue-700">批量选中</button>
-        <button onclick="candBatchAction('/candidates/reject')" class="bg-gray-500 text-white px-4 py-1.5 rounded text-sm hover:bg-gray-600">批量拒绝</button>
+        <button onclick="candBatchAction('/candidates/select')" class="bg-blue-600 text-white px-4 py-1.5 rounded text-sm hover:bg-blue-700">批量抓取</button>
         <button onclick="candBatchDelete()" class="bg-red-600 text-white px-4 py-1.5 rounded text-sm hover:bg-red-700">批量删除</button>
     </div>
 

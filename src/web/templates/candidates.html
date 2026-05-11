@@ -2,7 +2,41 @@
 {% block title %}候选活动 - 加拿大活动管理{% endblock %}
 
 {% block content %}
-<h1 class="text-xl font-bold text-gray-800 mb-4">候选活动（列表页抓取结果）</h1>
+<h1 class="text-xl font-bold text-gray-800 mb-4">候选活动</h1>
+
+<!-- 发现新活动 -->
+<details class="bg-white rounded-lg border mb-4">
+    <summary class="px-4 py-3 cursor-pointer font-semibold text-gray-700 hover:bg-gray-50">发现新活动</summary>
+    <form hx-post="/discover/start" hx-target="body" hx-swap="innerHTML" class="px-4 pb-4 pt-2">
+        <div class="mb-3">
+            <div class="flex gap-2 mb-2">
+                <button type="button" onclick="document.querySelectorAll('.city-cb').forEach(cb => cb.checked = true)"
+                        class="text-xs text-blue-600 hover:underline">全选</button>
+                <button type="button" onclick="document.querySelectorAll('.city-cb').forEach(cb => cb.checked = false)"
+                        class="text-xs text-blue-600 hover:underline">取消全选</button>
+            </div>
+            <div class="flex flex-wrap gap-3">
+            {% for slug, info in cities.items() %}
+                <label class="flex items-center gap-1.5 text-sm">
+                    <input type="checkbox" name="city_slugs" value="{{ slug }}" class="city-cb rounded border-gray-300">
+                    {{ info.eng_name }}
+                </label>
+            {% endfor %}
+            </div>
+        </div>
+        <div class="flex gap-4 mb-3">
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">开始日期</label>
+                <input type="date" name="start_date" class="border rounded px-3 py-1.5 text-sm">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500 mb-1">结束日期</label>
+                <input type="date" name="end_date" class="border rounded px-3 py-1.5 text-sm">
+            </div>
+        </div>
+        <button type="submit" class="bg-green-600 text-white px-6 py-2 rounded text-sm hover:bg-green-700">开始发现</button>
+    </form>
+</details>
 
 <!-- 筛选栏 -->
 <div class="bg-white rounded-lg border p-4 mb-4">
@@ -22,6 +56,7 @@
                 <option value="" {% if current_ai_worth == "" %}selected{% endif %}>全部</option>
                 <option value="1" {% if current_ai_worth == "1" %}selected{% endif %}>值得抓</option>
                 <option value="0" {% if current_ai_worth == "0" %}selected{% endif %}>不值得</option>
+                <option value="failed" {% if current_ai_worth == "failed" %}selected{% endif %}>判断失败</option>
             </select>
         </div>
         <div>

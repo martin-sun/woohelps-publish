@@ -14,7 +14,7 @@ from src.ai.engine import AIEngine
 from src.config.settings import CITIES, get_settings
 from src.main import (
     discover_city,
-    fetch_selected_details,
+    fetch_one_candidate,
     publish_one,
 )
 from src.publisher.woohelps import WoohelpsPublisher
@@ -41,9 +41,6 @@ async def verify_auth(credentials: HTTPBasicCredentials | None = Security(securi
 _db: Database | None = None
 _ai_engine: AIEngine | None = None
 _publisher: WoohelpsPublisher | None = None
-
-_scrape_guard = asyncio.Lock()
-_scrape_running = False
 
 
 def _get_db() -> Database:
@@ -191,9 +188,24 @@ async def activities_publish(request: Request):
     for act in activities:
         if act["status"] == "published":
             continue
-        await publish_one(act["id"], db, publisher)
+        task_id = await db.create_task(
+            "publish",
+            detail=act["title_zh"][:60] if act.get("title_zh") else str(act["id"]),
+        )
 
-    return RedirectResponse(url="/activities", status_code=303)
+        async def _run(act=act, task_id=task_id):
+            try:
+                result = await publish_one(act["id"], db, publisher)
+                if result.get("success"):
+                    await db.complete_scrape_task(task_id)
+                else:
+                    await db.fail_scrape_task(task_id, result.get("error", "unknown"))
+            except Exception as e:
+                await db.fail_scrape_task(task_id, str(e))
+
+        asyncio.create_task(_run())
+
+    return RedirectResponse(url="/tasks", status_code=303)
 
 
 @app.post("/activities/delete")
@@ -227,71 +239,36 @@ async def activity_detail(request: Request, activity_id: int):
 async def activity_publish(request: Request, activity_id: int):
     db = _get_db()
     publisher = _get_publisher()
-    result = await publish_one(activity_id, db, publisher)
-    if not result.get("success"):
-        logger.error(f"Publish failed for {activity_id}: {result.get('error')}")
-    return RedirectResponse(url=f"/activity/{activity_id}", status_code=303)
+    activity = await db.get_activity(activity_id)
+    task_id = await db.create_task(
+        "publish",
+        detail=activity["title_zh"][:60] if activity and activity.get("title_zh") else str(activity_id),
+    )
+
+    async def _run():
+        try:
+            result = await publish_one(activity_id, db, publisher)
+            if result.get("success"):
+                await db.complete_scrape_task(task_id)
+            else:
+                await db.fail_scrape_task(task_id, result.get("error", "unknown"))
+        except Exception as e:
+            await db.fail_scrape_task(task_id, str(e))
+
+    asyncio.create_task(_run())
+    return RedirectResponse(url="/tasks", status_code=303)
 
 
-@app.get("/scrape")
-async def scrape_page(request: Request):
+@app.get("/tasks")
+async def tasks_page(request: Request):
     db = _get_db()
-    tasks = await db.list_recent_scrape_tasks(20)
-    return templates.TemplateResponse(request, "scrape.html", {
-        "tasks": tasks, "cities": CITIES,
+    tasks = await db.list_recent_scrape_tasks(50)
+    return templates.TemplateResponse(request, "tasks.html", {
+        "tasks": tasks,
     })
 
 
-@app.post("/scrape/start")
-async def start_scrape(request: Request):
-    global _scrape_running
-
-    db = _get_db()
-    form = await request.form()
-    city_slugs = form.getlist("city_slugs")
-    if not city_slugs:
-        return RedirectResponse(url="/scrape", status_code=303)
-
-    start_date_str = form.get("start_date", "")
-    end_date_str = form.get("end_date", "")
-    try:
-        start_date = datetime.strptime(start_date_str, "%Y-%m-%d") if start_date_str else datetime.now(timezone.utc).replace(tzinfo=None)
-        end_date = datetime.strptime(end_date_str, "%Y-%m-%d") if end_date_str else start_date + timedelta(days=30)
-    except ValueError:
-        start_date = datetime.now(timezone.utc).replace(tzinfo=None)
-        end_date = start_date + timedelta(days=30)
-
-    async with _scrape_guard:
-        if _scrape_running:
-            return HTMLResponse("已有抓取任务正在运行，请等待完成", status_code=409)
-        _scrape_running = True
-
-    try:
-        task_id = await db.create_scrape_task(city_slugs)
-    except Exception:
-        _scrape_running = False
-        raise
-
-    ai_engine = _ai_engine
-
-    async def _run():
-        global _scrape_running
-        try:
-            for city in city_slugs:
-                await db.update_scrape_task(task_id, current_city=city)
-                await discover_city(city, start_date, end_date, db, ai_engine)
-            await db.complete_scrape_task(task_id)
-        except Exception as e:
-            logger.error(f"Scrape task {task_id} failed: {e}")
-            await db.fail_scrape_task(task_id, str(e))
-        finally:
-            _scrape_running = False
-
-    asyncio.create_task(_run())
-    return RedirectResponse(url=f"/scrape?task={task_id}", status_code=303)
-
-
-@app.get("/scrape/task/{task_id}/status")
+@app.get("/tasks/{task_id}/status")
 async def task_status(request: Request, task_id: int):
     db = _get_db()
     task = await db.get_scrape_task(task_id)
@@ -306,7 +283,7 @@ async def task_status(request: Request, task_id: int):
 async def delete_task(task_id: int, request: Request):
     db = _get_db()
     await db.delete_scrape_task(task_id)
-    referer = request.headers.get("referer", "/discover")
+    referer = request.headers.get("referer", "/candidates")
     return RedirectResponse(url=referer, status_code=303)
 
 
@@ -314,23 +291,14 @@ async def delete_task(task_id: int, request: Request):
 async def clear_tasks(request: Request):
     db = _get_db()
     await db.clear_scrape_tasks()
-    referer = request.headers.get("referer", "/discover")
+    referer = request.headers.get("referer", "/candidates")
     return RedirectResponse(url=referer, status_code=303)
 
 
-# --- Discover routes ---
+# --- Discover route (form embedded in candidates page) ---
 
 _discover_guard = asyncio.Lock()
 _discover_running = False
-
-
-@app.get("/discover")
-async def discover_page(request: Request):
-    db = _get_db()
-    tasks = await db.list_recent_scrape_tasks(20)
-    return templates.TemplateResponse(request, "discover.html", {
-        "tasks": tasks, "cities": CITIES,
-    })
 
 
 @app.post("/discover/start")
@@ -341,7 +309,7 @@ async def start_discover(request: Request):
     form = await request.form()
     city_slugs = form.getlist("city_slugs")
     if not city_slugs:
-        return RedirectResponse(url="/discover", status_code=303)
+        return RedirectResponse(url="/candidates", status_code=303)
 
     start_date_str = form.get("start_date", "")
     end_date_str = form.get("end_date", "")
@@ -379,20 +347,21 @@ async def start_discover(request: Request):
             _discover_running = False
 
     asyncio.create_task(_run())
-    return RedirectResponse(url=f"/discover?task={task_id}", status_code=303)
+    return RedirectResponse(url="/tasks", status_code=303)
 
 
 # --- Candidate routes ---
 
 @app.get("/candidates")
-async def candidates_page(request: Request, city: str = "", ai_worth: str = "", status: str = ""):
+async def candidates_page(request: Request, city: str = "", ai_worth: str = "1", status: str = ""):
     db = _get_db()
     city_slug = city or None
-    ai_filter = None if ai_worth == "" else (ai_worth == "1")
+    ai_failed = True if ai_worth == "failed" else None
+    ai_filter = None if ai_worth in ("", "failed") else (ai_worth == "1")
     status_filter = status or None
     limit = 50
-    candidates = await db.list_candidates(city_slug, ai_filter, status_filter, limit=limit, offset=0)
-    total = await db.count_candidates(city_slug, ai_filter, status_filter)
+    candidates = await db.list_candidates(city_slug, ai_filter, ai_failed, status_filter, limit=limit, offset=0)
+    total = await db.count_candidates(city_slug, ai_filter, ai_failed, status_filter)
     total_pages = max(1, (total + limit - 1) // limit)
     return templates.TemplateResponse(request, "candidates.html", {
         "candidates": candidates,
@@ -410,12 +379,13 @@ async def candidates_page(request: Request, city: str = "", ai_worth: str = "", 
 async def candidates_table(request: Request, city: str = "", ai_worth: str = "", status: str = "", page: int = 1):
     db = _get_db()
     city_slug = city or None
-    ai_filter = None if ai_worth == "" else (ai_worth == "1")
+    ai_failed = True if ai_worth == "failed" else None
+    ai_filter = None if ai_worth in ("", "failed") else (ai_worth == "1")
     status_filter = status or None
     limit = 50
     offset = (page - 1) * limit
-    candidates = await db.list_candidates(city_slug, ai_filter, status_filter, limit, offset)
-    total = await db.count_candidates(city_slug, ai_filter, status_filter)
+    candidates = await db.list_candidates(city_slug, ai_filter, ai_failed, status_filter, limit, offset)
+    total = await db.count_candidates(city_slug, ai_filter, ai_failed, status_filter)
     total_pages = max(1, (total + limit - 1) // limit)
     return templates.TemplateResponse(request, "partials/candidate_table.html", {
         "candidates": candidates,
@@ -433,10 +403,33 @@ async def candidates_select(request: Request):
     db = _get_db()
     form = await request.form()
     candidate_ids = [int(x) for x in form.getlist("candidate_ids")]
-    if candidate_ids:
-        await db.update_candidate_status(candidate_ids, "selected")
-    referer = request.headers.get("referer", "/candidates")
-    return RedirectResponse(url=referer, status_code=303)
+    if not candidate_ids:
+        return RedirectResponse(url="/candidates", status_code=303)
+
+    await db.update_candidate_status(candidate_ids, "selected")
+    ai_engine = _ai_engine
+
+    for cid in candidate_ids:
+        cand = await db.get_candidate(cid)
+        if not cand:
+            continue
+        task_id = await db.create_task(
+            "fetch_details",
+            detail=cand["source_url"][:80],
+        )
+
+        async def _run(cand=cand, task_id=task_id):
+            try:
+                new_count = await fetch_one_candidate(cand, db, ai_engine)
+                await db.update_scrape_task(task_id, total_fetched=1, total_new=new_count)
+                await db.complete_scrape_task(task_id)
+            except Exception as e:
+                logger.error(f"Fetch detail failed for {cand['source_url']}: {e}")
+                await db.fail_scrape_task(task_id, str(e))
+
+        asyncio.create_task(_run())
+
+    return RedirectResponse(url="/tasks", status_code=303)
 
 
 @app.post("/candidates/reject")
@@ -461,48 +454,72 @@ async def candidates_delete(request: Request):
     return RedirectResponse(url=referer, status_code=303)
 
 
-_fetch_guard = asyncio.Lock()
-_fetch_running = False
+_refilter_guard = asyncio.Lock()
+_refilter_running = False
 
 
-@app.post("/candidates/fetch-details")
-async def candidates_fetch_details(request: Request):
-    global _fetch_running
+@app.post("/candidates/refilter")
+async def candidates_refilter(request: Request):
+    global _refilter_running
 
     db = _get_db()
     form = await request.form()
     city = form.get("city", "") or None
-    logger.info(f"[fetch-details] city={city!r}")
 
-    start_date_str = form.get("start_date", "")
-    end_date_str = form.get("end_date", "")
-    try:
-        start_date = datetime.strptime(start_date_str, "%Y-%m-%d") if start_date_str else datetime.now(timezone.utc).replace(tzinfo=None)
-        end_date = datetime.strptime(end_date_str, "%Y-%m-%d") if end_date_str else start_date + timedelta(days=30)
-    except ValueError:
-        start_date = datetime.now(timezone.utc).replace(tzinfo=None)
-        end_date = start_date + timedelta(days=30)
+    candidates = await db.get_candidates_to_refilter(city)
+    if not candidates:
+        logger.info(f"[refilter] No failed candidates for city={city}")
+        return RedirectResponse(url="/candidates", status_code=303)
 
-    async with _fetch_guard:
-        if _fetch_running:
-            return HTMLResponse("已有详情抓取任务正在运行", status_code=409)
-        _fetch_running = True
+    async with _refilter_guard:
+        if _refilter_running:
+            return HTMLResponse("已有重新过滤任务正在运行，请等待完成", status_code=409)
+        _refilter_running = True
 
+    task_id = await db.create_scrape_task([city] if city else [], task_type="refilter")
     ai_engine = _ai_engine
 
     async def _run():
-        global _fetch_running
+        global _refilter_running
         try:
-            await fetch_selected_details(city, start_date, end_date, db, ai_engine)
-            logger.info(f"Fetch details complete for {city}")
+            await db.update_scrape_task(task_id, total_fetched=len(candidates))
+            logger.info(f"[refilter] Re-filtering {len(candidates)} failed candidates for city={city}")
+
+            summaries = [
+                {
+                    "title": c["title"],
+                    "date": c["event_date"] or "",
+                    "address": c["address"] or "",
+                    "price": c["price"] or "",
+                    "description": c["description"] or "",
+                }
+                for c in candidates
+            ]
+
+            city_slug = city or candidates[0]["city_slug"]
+            results = await ai_engine.filter_activities(city_slug, summaries)
+
+            for c, r in zip(candidates, results):
+                worth = bool(r.get("worth_fetching", False))
+                reason = r.get("reason", "")
+                title_zh = r.get("title_zh", c.get("title_zh", ""))
+                description_zh = r.get("description_zh", c.get("description_zh", ""))
+                await db.update_candidate_ai_result(c["id"], worth, reason, title_zh, description_zh)
+
+            worth_count = sum(1 for r in results if r.get("worth_fetching"))
+            await db.update_scrape_task(task_id, total_new=worth_count)
+            await db.complete_scrape_task(task_id)
+            logger.info(f"[refilter] Done: {worth_count}/{len(candidates)} now worth fetching")
         except Exception as e:
-            logger.error(f"Fetch details failed for {city}: {e}")
+            logger.error(f"[refilter] Failed: {e}")
+            await db.fail_scrape_task(task_id, str(e))
         finally:
-            _fetch_running = False
+            _refilter_running = False
 
     asyncio.create_task(_run())
-    redirect_url = f"/candidates?city={city}" if city else "/candidates"
-    return RedirectResponse(url=redirect_url, status_code=303)
+    referer = request.headers.get("referer", "/candidates")
+    return RedirectResponse(url=referer, status_code=303)
+
 
 
 if __name__ == "__main__":

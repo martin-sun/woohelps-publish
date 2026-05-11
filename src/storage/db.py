@@ -75,8 +75,9 @@ CREATE TABLE IF NOT EXISTS processed_pages (
 
 CREATE TABLE IF NOT EXISTS scrape_tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    city_slugs TEXT NOT NULL,              -- JSON array, e.g. ["toronto", "vancouver"]
-    status TEXT NOT NULL DEFAULT 'running',  -- running/completed/failed
+    task_type TEXT NOT NULL DEFAULT 'discover',  -- discover/fetch_details/refilter
+    city_slugs TEXT NOT NULL DEFAULT '[]',       -- JSON array, e.g. ["toronto", "vancouver"]
+    status TEXT NOT NULL DEFAULT 'running',      -- running/completed/failed
     total_fetched INTEGER NOT NULL DEFAULT 0,
     total_new INTEGER NOT NULL DEFAULT 0,
     total_skipped INTEGER NOT NULL DEFAULT 0,
@@ -225,6 +226,13 @@ class Database:
         if not ids:
             return
         placeholders = ",".join("?" * len(ids))
+        # 重置关联的 candidate 状态为待处理
+        await self._db.execute(
+            f"""UPDATE candidate_activities
+                SET human_status = 'pending', fetched_detail = 0, activity_id = NULL
+                WHERE activity_id IN ({placeholders})""",
+            ids,
+        )
         await self._db.execute(
             f"DELETE FROM activities WHERE id IN ({placeholders})", ids,
         )
@@ -286,10 +294,20 @@ class Database:
 
     # --- Scrape Tasks ---
 
-    async def create_scrape_task(self, city_slugs: list[str]) -> int:
+    async def create_scrape_task(self, city_slugs: list[str], task_type: str = "discover") -> int:
         cursor = await self._db.execute(
-            """INSERT INTO scrape_tasks (city_slugs) VALUES (?)""",
-            (json.dumps(city_slugs),),
+            """INSERT INTO scrape_tasks (task_type, city_slugs) VALUES (?, ?)""",
+            (task_type, json.dumps(city_slugs)),
+        )
+        await self._db.commit()
+        return cursor.lastrowid
+
+    async def create_task(
+        self, task_type: str, city_slugs: list[str] | None = None, *, detail: str = "",
+    ) -> int:
+        cursor = await self._db.execute(
+            """INSERT INTO scrape_tasks (task_type, city_slugs, current_city) VALUES (?, ?, ?)""",
+            (task_type, json.dumps(city_slugs or []), detail),
         )
         await self._db.commit()
         return cursor.lastrowid
@@ -494,6 +512,7 @@ class Database:
         self,
         city_slug: str | None = None,
         ai_worth: bool | None = None,
+        ai_failed: bool | None = None,
         human_status: str | None = None,
         limit: int = 50,
         offset: int = 0,
@@ -502,9 +521,12 @@ class Database:
         if city_slug:
             conditions.append("city_slug = ?")
             args.append(city_slug)
-        if ai_worth is not None:
+        if ai_failed is True:
+            conditions.append("ai_reason = 'AI 过滤失败，默认跳过'")
+        elif ai_worth is not None:
             conditions.append("ai_worth_fetching = ?")
             args.append(1 if ai_worth else 0)
+            conditions.append("(ai_reason IS NULL OR ai_reason != 'AI 过滤失败，默认跳过')")
         if human_status:
             conditions.append("human_status = ?")
             args.append(human_status)
@@ -520,15 +542,19 @@ class Database:
         self,
         city_slug: str | None = None,
         ai_worth: bool | None = None,
+        ai_failed: bool | None = None,
         human_status: str | None = None,
     ) -> int:
         conditions, args = [], []
         if city_slug:
             conditions.append("city_slug = ?")
             args.append(city_slug)
-        if ai_worth is not None:
+        if ai_failed is True:
+            conditions.append("ai_reason = 'AI 过滤失败，默认跳过'")
+        elif ai_worth is not None:
             conditions.append("ai_worth_fetching = ?")
             args.append(1 if ai_worth else 0)
+            conditions.append("(ai_reason IS NULL OR ai_reason != 'AI 过滤失败，默认跳过')")
         if human_status:
             conditions.append("human_status = ?")
             args.append(human_status)
@@ -580,6 +606,28 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+    async def get_candidates_to_refilter(self, city_slug: str | None = None) -> list[dict]:
+        conditions = ["ai_reason = 'AI 过滤失败，默认跳过'"]
+        args: list = []
+        if city_slug:
+            conditions.append("city_slug = ?")
+            args.append(city_slug)
+        where = f"WHERE {' AND '.join(conditions)}"
+        cursor = await self._db.execute(
+            f"SELECT * FROM candidate_activities {where} ORDER BY id", args,
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def update_candidate_ai_result(self, candidate_id: int, worth: bool, reason: str, title_zh: str, description_zh: str) -> None:
+        await self._db.execute(
+            """UPDATE candidate_activities
+               SET ai_worth_fetching = ?, ai_reason = ?, title_zh = ?, description_zh = ?
+               WHERE id = ?""",
+            (1 if worth else 0, reason, title_zh, description_zh, candidate_id),
+        )
+        await self._db.commit()
 
     async def get_candidate(self, candidate_id: int) -> dict | None:
         cursor = await self._db.execute(
