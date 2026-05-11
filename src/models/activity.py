@@ -27,7 +27,7 @@ class ProcessedActivity:
 
     # 内容
     description_zh: str            # 中文摘要 (200字以内)
-    html_zh: str                   # 翻译后的中文 HTML
+    content_zh: str                # 中文纯文本正文 (500-1000字)
 
     # 地点
     address: str

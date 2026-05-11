@@ -8,7 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from loguru import logger
 
 from src.ai.engine import AIEngine
-from src.ai.sanitizer import sanitize_html
+
 from src.config.settings import CITIES, get_settings
 from src.dedup.deduplicator import compute_content_hash, compute_html_hash
 from src.publisher.woohelps import WoohelpsPublisher, parse_fee_amount
@@ -131,7 +131,6 @@ async def fetch_selected_details(
                     fee_amount, fee_parsed_free = parse_fee_amount(activity.price)
                     activity.fee_amount = fee_amount
                     activity.fee_parsed_free = fee_parsed_free
-                    activity.html_zh = sanitize_html(activity.html_zh, raw_page.source_url)
 
                     saved_activity_id = await db.save(activity)
                     new_count += 1
@@ -207,7 +206,7 @@ async def publish_one(
         title_en=activity["title_en"],
         title_zh=activity["title_zh"],
         description_zh=activity["description_zh"],
-        html_zh=activity["html_zh"],
+        content_zh=activity["content_zh"],
         address=activity["address"],
         venue_name=activity["venue_name"],
         price=activity["price"],

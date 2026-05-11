@@ -69,11 +69,11 @@
     </div>
     {% endif %}
 
-    {% if activity.html_zh %}
+    {% if activity.content_zh %}
     <div>
         <h2 class="font-semibold text-gray-700 mb-2">详细内容</h2>
-        <div class="border rounded-lg p-4 prose prose-sm max-w-none">
-            {{ activity.html_zh | safe }}
+        <div class="border rounded-lg p-4 prose prose-sm max-w-none whitespace-pre-wrap">
+            {{ activity.content_zh }}
         </div>
     </div>
     {% endif %}

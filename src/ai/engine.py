@@ -77,7 +77,7 @@ FILTER_PROMPT = """你是一位活动筛选助手。请根据以下活动摘要�
 }}
 """
 
-PROCESS_PROMPT = """你是一个专业的加拿大活动信息处理助手。你的任务是从网页 HTML 中提取活动信息，翻译为中文，并生成摘要。
+PROCESS_PROMPT = """你是一个专业的加拿大活动信息处理助手。你的任务是从网页 HTML 中提取活动信息，翻译为中文，并生成适合手机端阅读的纯文本内容。
 
 ## 输入
 
@@ -93,8 +93,11 @@ PROCESS_PROMPT = """你是一个专业的加拿大活动信息处理助手。你
 请从上面的 HTML 中提取所有活动信息。注意：
 1. 一个页面可能包含多个活动（如活动指南类文章），请逐个提取
 2. 如果页面不是活动信息（如导航页、广告页），返回空列表
-3. 时间请根据城市时区解析为具体日期时间。如果只有日期没有时间，时间填 null
-4. 地址尽量提取完整地址
+3. 时间必须从页面中精确提取，把 "June 15, 2025 from 10am to 4pm" 这类自然语言解析为 start_date/start_time/end_date/end_time
+4. 如果只有日期没有具体时间，时间填 null
+5. 如果只有开始时间没有结束时间，end_time 填 null
+6. 地址必须提取完整地址（含街道号、街名、城市、省份、邮编），与 venue_name 区分
+7. 从页面中提取所有活动相关图片 URL（不止封面图）
 
 ## 输出格式
 
@@ -104,17 +107,18 @@ PROCESS_PROMPT = """你是一个专业的加拿大活动信息处理助手。你
         {{
             "title_en": "English title",
             "title_zh": "中文标题",
-            "description_zh": "中文摘要（200字以内，突出活动亮点）",
-            "html_zh": "翻译后的中文 HTML 内容（保留 HTML 标签结构）",
+            "description_zh": "中文摘要（200字以内，一句话概括活动核心内容）",
+            "content_zh": "中文纯文本正文（500-1000字，详见下方正文要求）",
             "start_date": "YYYY-MM-DD",
             "start_time": "HH:MM or null",
             "end_date": "YYYY-MM-DD",
             "end_time": "HH:MM or null",
-            "address": "完整地址",
+            "address": "完整地址（英文原文，含邮编）",
             "venue_name": "场地名称 or null",
             "price": "费用信息原文",
             "is_free": true/false,
-            "image_url": "图片 URL or null",
+            "image_url": "封面图片 URL",
+            "image_urls": ["图片1 URL", "图片2 URL"],
             "highlights": ["亮点1", "亮点2"],
             "activity_type": 1,
             "suitable": true/false,
@@ -122,6 +126,25 @@ PROCESS_PROMPT = """你是一个专业的加拿大活动信息处理助手。你
         }}
     ]
 }}
+
+## 正文 (content_zh) 写作要求
+
+content_zh 是给用户在手机端阅读的活动详情，必须是纯文本，禁止 HTML 标签。
+
+结构建议（按实际情况调整）：
+- 第一段：活动简介（2-3句话说明活动是什么、有什么特色）
+- 活动亮点：用"•"或"-"列出 2-5 个核心亮点
+- 时间和地点：写明具体时间、地址
+- 费用信息：写明是否免费，如有票价列出具体金额
+- 参与方式：报名链接/方式、是否需要提前注册
+- 其他注意事项：停车、交通、适合人群等
+
+写作风格：
+- 面向加拿大华人社区，语气亲切自然
+- 信息准确完整，保留关键细节（具体时间、价格、网址等）
+- 地址、人名、机构名保持英文原文
+- 不要使用"该活动"、"本次活动"等生硬表达
+- 不要加"总结"、"结语"等段落
 
 ## 活动类型说明
 
@@ -145,11 +168,10 @@ activity_type 取值：
 ## 翻译要求
 
 1. 标题翻译要简洁有力
-2. 描述翻译要保留关键信息（时间、地点、费用、参与方式）
-3. HTML 内容翻译时保持 HTML 标签结构不变
-4. 摘要不超过 200 字，突出活动亮点
-5. 地址、人名、地名、机构名保持英文原文，不要翻译
-6. address 和 venue_name 字段保持英文原文，不要翻译
+2. description_zh 不超过 200 字，突出活动亮点
+3. content_zh 500-1000 字，信息完整，适合手机阅读
+4. 地址、人名、地名、机构名保持英文原文，不要翻译
+5. address 和 venue_name 字段保持英文原文，不要翻译
 """
 
 
@@ -190,11 +212,32 @@ def _normalize_source_text(text: str) -> str:
     return re.sub(r'\s+', '', text.lower().strip())
 
 
+def _repair_json(text: str) -> str | None:
+    """尝试修复 LLM 输出的常见 JSON 畸形：尾逗号、value 间缺逗号"""
+    # 去掉数组/对象末尾的尾逗号: ,]  ,}
+    fixed = re.sub(r',\s*([}\]])', r'\1', text)
+    # 在 "key": value 后面紧跟 { 或 [ 或 " 时补逗号（value 之间缺分隔）
+    fixed = re.sub(r'(["\d}\]])(\s+)({|"|\[)', r'\1,\2\3', fixed)
+    try:
+        json.loads(fixed)
+        return fixed
+    except json.JSONDecodeError:
+        return None
+
+
 def _extract_json(text: str) -> str | None:
     """从 LLM 响应中提取 JSON 字符串"""
     code_block = re.search(r'```(?:json)?\s*\n(.*?)\n\s*```', text, re.DOTALL)
     if code_block:
-        return code_block.group(1).strip()
+        candidate = code_block.group(1).strip()
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            repaired = _repair_json(candidate)
+            if repaired:
+                return repaired
+
     depth = 0
     start = None
     for i, ch in enumerate(text):
@@ -210,6 +253,9 @@ def _extract_json(text: str) -> str | None:
                     json.loads(candidate)
                     return candidate
                 except json.JSONDecodeError:
+                    repaired = _repair_json(candidate)
+                    if repaired:
+                        return repaired
                     start = None
     return None
 
@@ -413,13 +459,13 @@ class AIEngine:
                 title_en=event["title_en"],
                 title_zh=event["title_zh"],
                 description_zh=event["description_zh"],
-                html_zh=event["html_zh"],
+                content_zh=event.get("content_zh", ""),
                 address=event.get("address", ""),
                 venue_name=event.get("venue_name"),
                 price=event.get("price"),
                 is_free=event.get("is_free", True),
                 image_url=event.get("image_url") or raw_page.image_url,
-                image_urls=[event["image_url"]] if event.get("image_url") else ([raw_page.image_url] if raw_page.image_url else []),
+                image_urls=event.get("image_urls") or ([event["image_url"]] if event.get("image_url") else ([raw_page.image_url] if raw_page.image_url else [])),
                 highlights=event.get("highlights", []),
                 activity_type=event.get("activity_type", 1),
                 start_time_utc=start_time_utc,

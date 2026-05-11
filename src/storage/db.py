@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS activities (
 
     -- 中文处理后的数据
     description_zh TEXT NOT NULL,
-    html_zh TEXT NOT NULL,
+    content_zh TEXT NOT NULL DEFAULT '',
 
     -- 时间和地点
     start_time TEXT,                    -- UTC
@@ -161,7 +161,7 @@ class Database:
         cursor = await self._db.execute(
             """INSERT INTO activities (
                 source, source_id, source_url, city_slug,
-                title_en, title_zh, description_zh, html_zh,
+                title_en, title_zh, description_zh, content_zh,
                 address, venue_name,
                 price, is_free, fee_amount, fee_parsed_free,
                 start_time, end_time, timezone,
@@ -172,7 +172,7 @@ class Database:
                 title_en=excluded.title_en,
                 title_zh=excluded.title_zh,
                 description_zh=excluded.description_zh,
-                html_zh=excluded.html_zh,
+                content_zh=excluded.content_zh,
                 address=excluded.address,
                 venue_name=excluded.venue_name,
                 price=excluded.price,
@@ -190,15 +190,15 @@ class Database:
             """,
             (
                 activity.source, activity.source_id, activity.source_url, activity.city_slug,
-                activity.title_en, activity.title_zh, activity.description_zh, activity.html_zh,
+                activity.title_en, activity.title_zh, activity.description_zh, activity.content_zh,
                 activity.address, activity.venue_name,
                 activity.price, int(activity.is_free), activity.fee_amount, int(activity.fee_parsed_free),
                 activity.start_time_utc.isoformat() if activity.start_time_utc else None,
                 activity.end_time_utc.isoformat() if activity.end_time_utc else None,
                 activity.timezone,
                 activity.image_url,
-                json.dumps(activity.image_urls),
-                json.dumps(activity.highlights),
+                json.dumps(activity.image_urls, ensure_ascii=False),
+                json.dumps(activity.highlights, ensure_ascii=False),
                 activity.activity_type,
                 activity.content_hash,
                 activity.status,
