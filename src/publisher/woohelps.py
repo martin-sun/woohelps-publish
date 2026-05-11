@@ -1,11 +1,14 @@
 import asyncio
 import json
 import re
+import time
 
 import httpx
 from loguru import logger
 
 from src.models.activity import ProcessedActivity
+
+DO_SPACES_BASE = "https://woohelps.sgp1.digitaloceanspaces.com"
 
 
 def parse_fee_amount(price: str | None) -> tuple[float, bool]:
@@ -28,7 +31,7 @@ class WoohelpsPublisher:
     def __init__(self, base_url: str, login_session: str):
         self.base_url = base_url
         self.login_session = login_session
-        self.client = httpx.AsyncClient(timeout=30.0)
+        self.client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
         self._city_map: dict[str, int] = {}
 
     async def close(self):
@@ -48,7 +51,6 @@ class WoohelpsPublisher:
             headers=headers,
         )
         data = resp.json()
-        # 响应结构: {"countries": [{"cities": [...]}]}
         cities = []
         for country in data.get("countries", []):
             cities.extend(country.get("cities", []))
@@ -62,19 +64,130 @@ class WoohelpsPublisher:
     def get_city_id(self, eng_name: str) -> int | None:
         return self._city_map.get(eng_name.lower())
 
+    # --- Image upload ---
+
+    async def _upload_image(self, image_url: str) -> str | None:
+        """下载外部图片并上传到 DO Spaces，返回自有 URL。失败返回 None。"""
+        try:
+            # 1. 下载图片
+            resp = await self.client.get(image_url)
+            if resp.status_code != 200:
+                logger.warning(f"Failed to download image {image_url}: {resp.status_code}")
+                return None
+            image_bytes = resp.content
+            if len(image_bytes) < 100:
+                logger.warning(f"Image too small ({len(image_bytes)} bytes), skipping: {image_url}")
+                return None
+
+            # 2. 生成文件名
+            from pathlib import PurePosixPath
+            raw_name = PurePosixPath(image_url).name.split("?")[0] or "image.jpeg"
+            if raw_name in ("image.png", "image.jpeg") or "." not in raw_name:
+                import random, string
+                prefix = "".join(random.choices(string.ascii_letters, k=8))
+                suffix = random.randint(0, 9999)
+                raw_name = f"{prefix}_{suffix}.jpeg"
+            content_type = "image/jpeg"
+            if raw_name.lower().endswith(".png"):
+                content_type = "image/png"
+            elif raw_name.lower().endswith(".webp"):
+                content_type = "image/webp"
+
+            # 3. 获取预签名 URL — 用 system user id=1
+            headers = {"LOGIN-SESSION": self.login_session}
+            presign_resp = await self.client.get(
+                f"{self.base_url}/api/applet/aws/generate-presigned-url",
+                params={
+                    "userId": "1",
+                    "fileType": "image",
+                    "fileName": raw_name,
+                    "contentType": content_type,
+                },
+                headers=headers,
+            )
+            if presign_resp.status_code != 200:
+                logger.warning(f"Failed to get presigned URL for {raw_name}: {presign_resp.status_code}")
+                return None
+            presign_data = presign_resp.json()
+            presign_url = presign_data.get("url", "")
+            presign_fields = presign_data.get("fields", {})
+            if not presign_url or not presign_fields:
+                logger.warning(f"Invalid presigned response for {raw_name}")
+                return None
+
+            # 4. 上传到 DO Spaces
+            scheme_end = presign_url.find("://")
+            path_start = presign_url.find("/", scheme_end + 3) if scheme_end >= 0 else 0
+            path = presign_url[path_start:] if path_start >= 0 else ""
+            upload_url = f"{DO_SPACES_BASE}{path}"
+
+            form_data = {k: (None, v) for k, v in presign_fields.items()}
+            form_data["file"] = (raw_name, image_bytes, content_type)
+
+            upload_resp = await self.client.post(
+                upload_url,
+                files=form_data,
+            )
+            if upload_resp.status_code < 200 or upload_resp.status_code >= 300:
+                logger.warning(f"Failed to upload {raw_name}: {upload_resp.status_code}")
+                return None
+
+            result_url = f"{DO_SPACES_BASE}/{presign_fields['key']}"
+            logger.info(f"Uploaded image: {result_url}")
+            return result_url
+
+        except Exception as e:
+            logger.warning(f"Failed to upload image {image_url}: {e}")
+            return None
+
+    async def _upload_all_images(self, image_urls: list[str]) -> list[str]:
+        """批量下载并上传图片，返回自有 URL 列表（跳过失败的）。"""
+        if not image_urls:
+            return []
+        results = []
+        for url in image_urls:
+            uploaded = await self._upload_image(url)
+            if uploaded:
+                results.append(uploaded)
+        return results
+
+    # --- Publish ---
+
     async def publish_activity(self, activity: ProcessedActivity, city_id: int) -> dict:
-        """发布活动到海外新生活平台（fee_amount/fee_parsed_free 应在调用前已设置）"""
+        """发布活动到海外新生活平台（miniapp 格式）"""
+
+        # 1. 下载并上传所有图片到自有存储
+        all_source_urls = []
+        if activity.image_url:
+            all_source_urls.append(activity.image_url)
+        for url in activity.image_urls:
+            if url and url not in all_source_urls:
+                all_source_urls.append(url)
+
+        uploaded_urls = await self._upload_all_images(all_source_urls)
+        if not uploaded_urls:
+            logger.error(f"No images uploaded for {activity.source_id}, aborting publish")
+            return {"errcode": -1, "errmsg": "图片上传失败"}
+
+        # 2. 构建 miniapp 格式 description
+        description = json.dumps([
+            {
+                "type": 1,
+                "text": json.dumps({"txt": activity.content_zh, "path": ""}, ensure_ascii=False),
+            }
+        ], ensure_ascii=False)
+
+        # 3. 构建 payload
         data = {
             "name": activity.title_zh,
-            "description": activity.description_zh,
-            "html": activity.html_zh,
+            "description": description,
             "city_id": city_id,
             "city_area_id": 0,
             "start_time": activity.start_time_utc.strftime("%Y-%m-%d %H:%M") if activity.start_time_utc else "",
             "end_time": activity.end_time_utc.strftime("%Y-%m-%d %H:%M") if activity.end_time_utc else "",
             "address": activity.address,
-            "img": activity.image_url or "",
-            "imgs": json.dumps(activity.image_urls),
+            "img": uploaded_urls[0],
+            "imgs": json.dumps(uploaded_urls, ensure_ascii=False),
             "fee_type": 1 if activity.fee_parsed_free else 2,
             "fee": activity.fee_amount,
             "enroll_type": 1,
