@@ -7,6 +7,6 @@ async def launch_browser(p: Playwright, settings: Settings) -> Browser:
     if settings.BROWSER_WS_ENDPOINT:
         return await p.chromium.connect_over_cdp(settings.BROWSER_WS_ENDPOINT)
     return await p.chromium.launch(
-        headless=True,
+        headless=False,
         args=["--disable-blink-features=AutomationControlled"],
     )

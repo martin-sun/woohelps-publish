@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Security
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -311,15 +311,6 @@ async def start_discover(request: Request):
     if not city_slugs:
         return RedirectResponse(url="/candidates", status_code=303)
 
-    start_date_str = form.get("start_date", "")
-    end_date_str = form.get("end_date", "")
-    try:
-        start_date = datetime.strptime(start_date_str, "%Y-%m-%d") if start_date_str else datetime.now(timezone.utc).replace(tzinfo=None)
-        end_date = datetime.strptime(end_date_str, "%Y-%m-%d") if end_date_str else start_date + timedelta(days=30)
-    except ValueError:
-        start_date = datetime.now(timezone.utc).replace(tzinfo=None)
-        end_date = start_date + timedelta(days=30)
-
     async with _discover_guard:
         if _discover_running:
             return HTMLResponse("已有发现任务正在运行，请等待完成", status_code=409)
@@ -338,7 +329,7 @@ async def start_discover(request: Request):
         try:
             for city in city_slugs:
                 await db.update_scrape_task(task_id, current_city=city)
-                await discover_city(city, start_date, end_date, db, ai_engine)
+                await discover_city(city, db, ai_engine)
             await db.complete_scrape_task(task_id)
         except Exception as e:
             logger.error(f"Discover task {task_id} failed: {e}")

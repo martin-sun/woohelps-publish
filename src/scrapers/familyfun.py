@@ -1,5 +1,3 @@
-from datetime import datetime
-
 from playwright.async_api import async_playwright
 
 from loguru import logger
@@ -19,6 +17,8 @@ FAMILYFUN_CITY_SLUGS = {
     "saskatoon": "saskatoon",
 }
 
+MAX_PAGES = 3
+
 
 class FamilyFunCanadaScraper(BaseScraper):
     BASE_URL = "https://www.familyfuncanada.com"
@@ -28,51 +28,56 @@ class FamilyFunCanadaScraper(BaseScraper):
         return set(FAMILYFUN_CITY_SLUGS.keys())
 
     async def discover_pages(
-        self, city_slug: str, start_date: datetime, end_date: datetime,
-        ai_engine=None,
+        self, city_slug: str, ai_engine=None,
     ) -> list[dict]:
-        """只抓列表页，返回文章 URL 列表（摘要信息有限，以 URL 为主）"""
+        """抓列表页 HTML，用 LLM 提取活动摘要"""
         slug = FAMILYFUN_CITY_SLUGS.get(city_slug)
         if not slug:
+            return []
+        if not ai_engine:
+            logger.warning("FamilyFunCanada scraper requires ai_engine for LLM extraction")
             return []
 
         async with async_playwright() as p:
             browser = await launch_browser(p, get_settings())
             page = await browser.new_page()
 
-            city_url = f"{self.BASE_URL}/{slug}/"
-            await self._goto(page, city_url)
-            article_urls = await self._collect_links(
-                page, rf"familyfuncanada\.com/{slug}/[^/]+/$"
-            )
+            page_htmls: list[tuple[str, str]] = []
 
-            skip_patterns = [
-                "/category/", "/tag/", "/calendar/", "/page/",
-                "/feed/", "/files/", "/wp-content/", "/wp-json/",
-            ]
-            article_urls = [
-                u for u in article_urls
-                if not any(p in u for p in skip_patterns)
-            ]
-
-            for page_num in range(2, 4):
-                next_url = f"{self.BASE_URL}/{slug}/page/{page_num}/"
-                resp = await page.goto(next_url, wait_until="domcontentloaded", timeout=30_000)
-                if not resp or resp.status == 404:
-                    break
-                more = await self._collect_links(
-                    page, rf"familyfuncanada\.com/{slug}/[^/]+/$"
+            for page_num in range(MAX_PAGES):
+                url = (
+                    f"{self.BASE_URL}/{slug}/page/{page_num}/"
+                    if page_num > 0
+                    else f"{self.BASE_URL}/{slug}/"
                 )
-                more = [u for u in more if not any(p in u for p in skip_patterns)]
-                article_urls.extend(more)
+                try:
+                    resp = await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                    if not resp or resp.status == 404:
+                        break
+                except Exception as e:
+                    logger.warning(f"Failed to load {url}: {e}")
+                    break
 
-            article_urls = list(set(article_urls))
-            logger.info(f"FamilyFunCanada {city_slug}: discovered {len(article_urls)} articles")
+                html = await page.content()
+                page_htmls.append((url, html))
+                await self._delay()
+
             await browser.close()
 
-            # 返回简单摘要（标题从 URL 提取，详情页再补全）
-            return [
-                {"url": url, "title": url.rstrip("/").split("/")[-1].replace("-", " ").title()}
-                for url in article_urls
-            ]
+        if not page_htmls:
+            return []
+
+        seen_urls: set[str] = set()
+        unique: list[dict] = []
+        for url, html in page_htmls:
+            summaries = await ai_engine.extract_list_events(
+                html, city_slug, "familyfuncanada", url,
+            )
+            for s in summaries:
+                if s.get("url") and s["url"] not in seen_urls:
+                    seen_urls.add(s["url"])
+                    unique.append(s)
+
+        logger.info(f"FamilyFunCanada {city_slug}: discovered {len(unique)} events from {len(page_htmls)} pages")
+        return unique
 

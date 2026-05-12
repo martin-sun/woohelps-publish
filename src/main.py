@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import json
 import signal
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from loguru import logger
@@ -13,7 +13,6 @@ from src.config.settings import CITIES, get_settings
 from src.dedup.deduplicator import compute_content_hash, compute_html_hash
 from src.publisher.woohelps import WoohelpsPublisher, parse_fee_amount
 from src.scrapers.familyfun import FamilyFunCanadaScraper
-from src.scrapers.saskatoon import DiscoverSaskatoonScraper
 from src.scrapers.todocanada import TodoCanadaScraper
 from src.scrapers.browser import launch_browser
 from src.storage.db import Database
@@ -21,12 +20,11 @@ from src.storage.db import Database
 SCRAPERS = {
     "todocanada": TodoCanadaScraper,
     "familyfuncanada": FamilyFunCanadaScraper,
-    "discoversaskatoon": DiscoverSaskatoonScraper,
 }
 
 
 async def discover_city(
-    city_slug: str, start_date: datetime, end_date: datetime,
+    city_slug: str,
     db: Database, ai_engine: AIEngine,
 ):
     """只抓列表页摘要，AI 过滤，存入 candidate_activities"""
@@ -37,7 +35,7 @@ async def discover_city(
         if city_slug not in scraper.supported_cities:
             continue
         try:
-            summaries = await scraper.discover_pages(city_slug, start_date, end_date, ai_engine=ai_engine)
+            summaries = await scraper.discover_pages(city_slug, ai_engine=ai_engine)
         except Exception as e:
             logger.error(f"Discover {name} failed for {city_slug}: {e}")
             continue
@@ -77,7 +75,7 @@ async def discover_city(
 
 
 async def fetch_selected_details(
-    city_slug: str, start_date: datetime, end_date: datetime,
+    city_slug: str,
     db: Database, ai_engine: AIEngine,
 ):
     """从 candidate_activities 读取人工选中的活动，抓详情 + AI 处理 + 存储"""
@@ -300,12 +298,9 @@ async def run_once(city: str | None = None):
     async with Database(settings.DATABASE_URL) as db:
         ai_engine = AIEngine.from_settings(settings)
 
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        end_date = now + timedelta(days=30)
-
         cities = [city] if city else list(CITIES.keys())
         for city_slug in cities:
-            await discover_city(city_slug, now, end_date, db, ai_engine)
+            await discover_city(city_slug, db, ai_engine)
 
     logger.info("Discover complete")
 
