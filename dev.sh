@@ -11,6 +11,7 @@ usage() {
     echo "  schedule  Start scheduled mode (daily 06:00 UTC)"
     echo "  install   Install dependencies via uv"
     echo "  setup     Copy .env.example → .env if not exists"
+    echo "  docker    Build and run via docker compose"
 }
 
 case "${1:-}" in
@@ -35,6 +36,9 @@ case "${1:-}" in
         else
             echo ".env already exists, skipping"
         fi
+        ;;
+    docker)
+        docker compose up --build
         ;;
     *)
         usage

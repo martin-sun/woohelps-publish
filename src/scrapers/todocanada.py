@@ -5,7 +5,9 @@ from playwright.async_api import async_playwright
 
 from loguru import logger
 
+from src.config.settings import get_settings
 from src.scrapers.base import BaseScraper
+from src.scrapers.browser import launch_browser
 
 TODOCANADA_CITY_SLUGS = {
     "toronto": "toronto",
@@ -96,10 +98,7 @@ class TodoCanadaScraper(BaseScraper):
         list_url = f"{self.BASE_URL}/city/{slug}/events/"
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled"],
-            )
+            browser = await launch_browser(p, get_settings())
             context = await browser.new_context(
                 user_agent=(
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "

@@ -15,6 +15,7 @@ from src.publisher.woohelps import WoohelpsPublisher, parse_fee_amount
 from src.scrapers.familyfun import FamilyFunCanadaScraper
 from src.scrapers.saskatoon import DiscoverSaskatoonScraper
 from src.scrapers.todocanada import TodoCanadaScraper
+from src.scrapers.browser import launch_browser
 from src.storage.db import Database
 
 SCRAPERS = {
@@ -67,7 +68,7 @@ async def discover_city(
                 "price": s.get("price", ""),
                 "description": s.get("description", ""),
                 "description_zh": s.get("description_zh", ""),
-                "ai_worth_fetching": 1 if s.get("worth_fetching", True) else 0,
+                "ai_worth_fetching": s.get("worth_fetching", True),
                 "ai_reason": s.get("reason", ""),
             })
 
@@ -90,10 +91,7 @@ async def fetch_selected_details(
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
+        browser = await launch_browser(p, get_settings())
         context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -160,10 +158,7 @@ async def fetch_one_candidate(cand: dict, db: Database, ai_engine: AIEngine) -> 
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
+        browser = await launch_browser(p, get_settings())
         context = await browser.new_context(
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -302,7 +297,7 @@ async def run_once(city: str | None = None):
     """单次运行发现流程（列表页 + AI 过滤 → 存入候选，不自动抓详情）"""
     settings = get_settings()
 
-    async with Database(settings.DB_PATH) as db:
+    async with Database(settings.DATABASE_URL) as db:
         ai_engine = AIEngine.from_settings(settings)
 
         now = datetime.now(timezone.utc).replace(tzinfo=None)

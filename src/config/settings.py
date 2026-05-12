@@ -21,7 +21,10 @@ class Settings(BaseSettings):
     WOOHELPS_LOGIN_SESSION: str
 
     # 数据库
-    DB_PATH: str = "./data/activities.db"
+    DATABASE_URL: str = "postgresql://localhost/activities"
+
+    # 浏览器（空值=本地启动 Chromium，非空=连接远程 CDP）
+    BROWSER_WS_ENDPOINT: str = ""
 
     # 管理界面
     ADMIN_PASSWORD: str = ""  # 可选，设置后管理界面启用 Basic Auth

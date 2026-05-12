@@ -4,7 +4,9 @@ from playwright.async_api import async_playwright
 
 from loguru import logger
 
+from src.config.settings import get_settings
 from src.scrapers.base import BaseScraper
+from src.scrapers.browser import launch_browser
 
 
 class DiscoverSaskatoonScraper(BaseScraper):
@@ -27,7 +29,7 @@ class DiscoverSaskatoonScraper(BaseScraper):
             return []
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await launch_browser(p, get_settings())
             page = await browser.new_page()
 
             page_htmls: list[tuple[str, str]] = []  # (url, html)

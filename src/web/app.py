@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
     global _db, _ai_engine, _publisher
 
     settings = get_settings()
-    _db = Database(settings.DB_PATH)
+    _db = Database(settings.DATABASE_URL)
     await _db.init()
     _ai_engine = AIEngine.from_settings(settings)
 
