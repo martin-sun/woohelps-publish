@@ -1,7 +1,7 @@
 import hashlib
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import anthropic
@@ -33,6 +33,7 @@ EXTRACT_LIST_PROMPT = """你是一个专业的网页内容提取助手。请从�
             "url": "活动详情页的完整 URL",
             "title": "活动标题（原文）",
             "date": "活动日期/时间信息（原文）",
+            "start_date": "YYYY-MM-DD（活动开始日期，必须从原文中提取，不确定时填 null）",
             "address": "活动地址（如有，原文）",
             "price": "费用信息（如有，原文）",
             "description": "活动简短描述（原文，200字以内）"
@@ -173,6 +174,32 @@ activity_type 取值：
 4. 地址、人名、地名、机构名保持英文原文，不要翻译
 5. address 和 venue_name 字段保持英文原文，不要翻译
 """
+
+# 过滤批大小：每次发给 AI 的活动数量
+FILTER_BATCH_SIZE = 25
+
+# 活动日期窗口：只保留未来 N 天内的活动
+DATE_WINDOW_DAYS = 30
+
+
+def filter_by_date(summaries: list[dict]) -> list[dict]:
+    """过滤掉 start_date 超出未来 DATE_WINDOW_DAYS 天的活动。"""
+    cutoff = datetime.now(timezone.utc).date() + timedelta(days=DATE_WINDOW_DAYS)
+    kept = []
+    for s in summaries:
+        raw = s.get("start_date")
+        if not raw or raw == "null":
+            kept.append(s)  # 无日期的保留，交给后续 AI 过滤判断
+            continue
+        try:
+            event_date = datetime.strptime(raw, "%Y-%m-%d").date()
+            if event_date <= cutoff:
+                kept.append(s)
+            else:
+                logger.debug(f"Skipped future event: {s.get('title', '')} ({raw})")
+        except ValueError:
+            kept.append(s)  # 解析失败的保留
+    return kept
 
 
 def html_preclean(html: str, max_chars: int = 30000) -> str:
@@ -342,62 +369,73 @@ class AIEngine:
     async def filter_activities(
         self, city_slug: str, summaries: list[dict],
     ) -> list[dict]:
-        """根据列表页摘要批量过滤活动，返回 worth_fetching=true 的条目"""
+        """根据列表页摘要批量过滤活动，分批调用 AI 避免响应截断"""
         if not summaries:
             return []
 
         city_name = CITIES[city_slug]["eng_name"]
-        items = []
-        for i, s in enumerate(summaries, 1):
-            items.append(
-                f"{i}. 标题: {s.get('title', '')}\n"
-                f"   日期: {s.get('date', '')}\n"
-                f"   地址: {s.get('address', '')}\n"
-                f"   价格: {s.get('price', '')}\n"
-                f"   描述: {s.get('description', '')[:200]}"
-            )
 
-        try:
-            response = await self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                messages=[{
-                    "role": "user",
-                    "content": FILTER_PROMPT.format(
-                        city_name=city_name,
-                        items="\n\n".join(items),
-                    ),
-                }],
-            )
-            text = response.content[0].text
-            json_text = _extract_json(text)
-            if not json_text:
-                logger.warning(f"No JSON found in filter response for {city_slug}")
-                return summaries
+        # 分批处理
+        for batch_start in range(0, len(summaries), FILTER_BATCH_SIZE):
+            batch = summaries[batch_start:batch_start + FILTER_BATCH_SIZE]
+            items = []
+            for i, s in enumerate(batch, 1):
+                items.append(
+                    f"{i}. 标题: {s.get('title', '')}\n"
+                    f"   日期: {s.get('date', '')}\n"
+                    f"   地址: {s.get('address', '')}\n"
+                    f"   价格: {s.get('price', '')}\n"
+                    f"   描述: {s.get('description', '')[:200]}"
+                )
 
-            result = json.loads(json_text)
-            results = result.get("results", [])
+            try:
+                response = await self.client.messages.create(
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    messages=[{
+                        "role": "user",
+                        "content": FILTER_PROMPT.format(
+                            city_name=city_name,
+                            items="\n\n".join(items),
+                        ),
+                    }],
+                )
+                text = response.content[0].text
+                json_text = _extract_json(text)
+                if not json_text:
+                    logger.warning(f"No JSON in filter response for {city_slug} batch {batch_start}")
+                    for s in batch:
+                        s.setdefault("worth_fetching", False)
+                        s.setdefault("reason", "AI 过滤响应解析失败")
+                    continue
 
-            # 将 AI 判断结果和中文翻译附加到每个摘要
-            for r in results:
-                idx = r.get("index", 0) - 1
-                if 0 <= idx < len(summaries):
-                    summaries[idx]["worth_fetching"] = r.get("worth_fetching", False)
-                    summaries[idx]["reason"] = r.get("reason", "")
-                    summaries[idx]["title_zh"] = r.get("title_zh", "")
-                    summaries[idx]["description_zh"] = r.get("description_zh", "")
+                result = json.loads(json_text)
+                results = result.get("results", [])
 
-            worth_count = sum(1 for s in summaries if s.get("worth_fetching"))
-            skipped = len(summaries) - worth_count
-            logger.info(f"AI filter: {len(summaries)} -> {worth_count} worth fetching (skipped {skipped}) for {city_slug}")
-            return summaries
+                for r in results:
+                    idx = r.get("index", 0) - 1
+                    if 0 <= idx < len(batch):
+                        batch[idx]["worth_fetching"] = r.get("worth_fetching", False)
+                        batch[idx]["reason"] = r.get("reason", "")
+                        batch[idx]["title_zh"] = r.get("title_zh", "")
+                        batch[idx]["description_zh"] = r.get("description_zh", "")
 
-        except Exception as e:
-            logger.error(f"AI filter failed for {city_slug}: {e}")
-            for s in summaries:
-                s.setdefault("worth_fetching", False)
-                s.setdefault("reason", "AI 过滤失败，默认跳过")
-            return summaries
+                worth_in_batch = sum(1 for s in batch if s.get("worth_fetching"))
+                logger.info(
+                    f"AI filter batch {batch_start // FILTER_BATCH_SIZE + 1}: "
+                    f"{len(batch)} -> {worth_in_batch} worth for {city_slug}"
+                )
+
+            except Exception as e:
+                logger.error(f"AI filter batch failed for {city_slug} batch {batch_start}: {e}")
+                for s in batch:
+                    s.setdefault("worth_fetching", False)
+                    s.setdefault("reason", "AI 过滤失败，默认跳过")
+
+        worth_count = sum(1 for s in summaries if s.get("worth_fetching"))
+        skipped = len(summaries) - worth_count
+        logger.info(f"AI filter total: {len(summaries)} -> {worth_count} worth fetching (skipped {skipped}) for {city_slug}")
+        return summaries
 
     async def process(self, raw_page: RawPage) -> list[ProcessedActivity]:
         """处理一个原始页面，返回提取到的活动列表"""
