@@ -19,7 +19,7 @@ TODOCANADA_CITY_SLUGS = {
     "moncton": "moncton",
 }
 
-MAX_PAGES = 10
+MAX_PAGES = 3
 
 
 class TodoCanadaScraper(BaseScraper):
