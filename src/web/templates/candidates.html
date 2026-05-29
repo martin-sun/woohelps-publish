@@ -30,7 +30,7 @@
 
 <!-- 筛选栏 -->
 <div class="bg-white rounded-lg border p-4 mb-4">
-    <form hx-get="/candidates/table" hx-target="#candidate-table" hx-swap="innerHTML" class="flex flex-wrap gap-4 items-end">
+    <form hx-get="/candidates" hx-target="#candidate-table" hx-select="#candidate-table" hx-swap="innerHTML" hx-push-url="true" class="flex flex-wrap gap-4 items-end">
         <div>
             <label class="block text-xs text-gray-500 mb-1">城市</label>
             <select name="city" class="border rounded px-3 py-1.5 text-sm">

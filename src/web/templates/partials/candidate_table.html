@@ -109,8 +109,8 @@
             {% if p == current_page %}
             <span class="px-3 py-1 bg-blue-600 text-white rounded">{{ p }}</span>
             {% else %}
-            <a hx-get="/candidates/table?city={{ current_city }}&ai_worth={{ current_ai_worth }}&status={{ current_status }}&page={{ p }}"
-               hx-target="#candidate-table" hx-swap="innerHTML"
+            <a hx-get="/candidates?city={{ current_city }}&ai_worth={{ current_ai_worth }}&status={{ current_status }}&page={{ p }}"
+               hx-target="#candidate-table" hx-select="#candidate-table" hx-swap="innerHTML" hx-push-url="true"
                class="px-3 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 cursor-pointer">{{ p }}</a>
             {% endif %}
         {% endfor %}

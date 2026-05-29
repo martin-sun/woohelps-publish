@@ -7,7 +7,7 @@
 </div>
 
 <form class="bg-white rounded-lg border p-4 mb-4 flex flex-wrap gap-3 items-end" id="filter-form"
-      hx-get="/activities/table" hx-target="#activity-table" hx-swap="innerHTML">
+      hx-get="/activities" hx-target="#activity-table" hx-select="#activity-table" hx-swap="innerHTML" hx-push-url="true">
     <div>
         <label class="block text-xs text-gray-500 mb-1">城市</label>
         <select name="city" class="border rounded px-3 py-1.5 text-sm">

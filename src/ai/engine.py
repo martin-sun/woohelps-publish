@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import re
@@ -324,6 +325,7 @@ class AIEngine:
         )
         self.model = model
         self.max_tokens = max_tokens
+        self._lock = asyncio.Lock()
 
     @classmethod
     def from_settings(cls, settings) -> "AIEngine":
@@ -341,19 +343,20 @@ class AIEngine:
         city_name = CITIES[city_slug]["eng_name"]
         clean_html = html_preclean(raw_html, max_chars=20000)
 
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            messages=[{
-                "role": "user",
-                "content": EXTRACT_LIST_PROMPT.format(
-                    city_name=city_name,
-                    source=source,
-                    page_url=page_url,
-                    raw_html=clean_html,
-                ),
-            }],
-        )
+        async with self._lock:
+            response = await self.client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                messages=[{
+                    "role": "user",
+                    "content": EXTRACT_LIST_PROMPT.format(
+                        city_name=city_name,
+                        source=source,
+                        page_url=page_url,
+                        raw_html=clean_html,
+                    ),
+                }],
+            )
 
         text = response.content[0].text
         json_text = _extract_json(text)
@@ -389,17 +392,18 @@ class AIEngine:
                 )
 
             try:
-                response = await self.client.messages.create(
-                    model=self.model,
-                    max_tokens=self.max_tokens,
-                    messages=[{
-                        "role": "user",
-                        "content": FILTER_PROMPT.format(
-                            city_name=city_name,
-                            items="\n\n".join(items),
-                        ),
-                    }],
-                )
+                async with self._lock:
+                    response = await self.client.messages.create(
+                        model=self.model,
+                        max_tokens=self.max_tokens,
+                        messages=[{
+                            "role": "user",
+                            "content": FILTER_PROMPT.format(
+                                city_name=city_name,
+                                items="\n\n".join(items),
+                            ),
+                        }],
+                    )
                 text = response.content[0].text
                 json_text = _extract_json(text)
                 if not json_text:
@@ -442,19 +446,20 @@ class AIEngine:
         city_name = CITIES[raw_page.city_slug]["eng_name"]
         clean_html = html_preclean(raw_page.raw_html)
 
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            messages=[{
-                "role": "user",
-                "content": PROCESS_PROMPT.format(
-                    city_name=city_name,
-                    source=raw_page.source,
-                    source_url=raw_page.source_url,
-                    raw_html=clean_html,
-                ),
-            }],
-        )
+        async with self._lock:
+            response = await self.client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens,
+                messages=[{
+                    "role": "user",
+                    "content": PROCESS_PROMPT.format(
+                        city_name=city_name,
+                        source=raw_page.source,
+                        source_url=raw_page.source_url,
+                        raw_html=clean_html,
+                    ),
+                }],
+            )
 
         text = response.content[0].text
         json_text = _extract_json(text)

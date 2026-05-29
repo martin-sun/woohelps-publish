@@ -129,13 +129,14 @@ async def dashboard(request: Request):
 
 
 @app.get("/activities")
-async def activities_page(request: Request, city: str = "", status: str = "", source: str = ""):
+async def activities_page(request: Request, city: str = "", status: str = "", source: str = "", page: int = 1):
     db = _get_db()
     city_slug = city or None
     status_filter = status or None
     source_filter = source or None
     limit = 50
-    activities = await db.list_activities(city_slug, status_filter, source_filter, limit=limit, offset=0)
+    offset = (page - 1) * limit
+    activities = await db.list_activities(city_slug, status_filter, source_filter, limit, offset)
     total = await db.count_activities(city_slug, status_filter, source_filter)
     logger.info(f"[activities] city={city_slug}, status={status_filter}, source={source_filter}, total={total}, returned={len(activities)}")
     if activities:
@@ -145,33 +146,11 @@ async def activities_page(request: Request, city: str = "", status: str = "", so
         "activities": activities,
         "total": total,
         "total_pages": total_pages,
-        "current_page": 1,
-        "current_city": city,
-        "current_status": status,
-        "current_source": source,
-        "cities": CITIES,
-    })
-
-
-@app.get("/activities/table")
-async def activities_table(request: Request, city: str = "", status: str = "", source: str = "", page: int = 1):
-    db = _get_db()
-    city_slug = city or None
-    status_filter = status or None
-    source_filter = source or None
-    limit = 50
-    offset = (page - 1) * limit
-    activities = await db.list_activities(city_slug, status_filter, source_filter, limit, offset)
-    total = await db.count_activities(city_slug, status_filter, source_filter)
-    total_pages = max(1, (total + limit - 1) // limit)
-    return templates.TemplateResponse(request, "partials/activity_table.html", {
-        "activities": activities,
-        "total": total,
-        "total_pages": total_pages,
         "current_page": page,
         "current_city": city,
         "current_status": status,
         "current_source": source,
+        "cities": CITIES,
     })
 
 
@@ -344,30 +323,7 @@ async def start_discover(request: Request):
 # --- Candidate routes ---
 
 @app.get("/candidates")
-async def candidates_page(request: Request, city: str = "", ai_worth: str = "1", status: str = ""):
-    db = _get_db()
-    city_slug = city or None
-    ai_failed = True if ai_worth == "failed" else None
-    ai_filter = None if ai_worth in ("", "failed") else (ai_worth == "1")
-    status_filter = status or None
-    limit = 50
-    candidates = await db.list_candidates(city_slug, ai_filter, ai_failed, status_filter, limit=limit, offset=0)
-    total = await db.count_candidates(city_slug, ai_filter, ai_failed, status_filter)
-    total_pages = max(1, (total + limit - 1) // limit)
-    return templates.TemplateResponse(request, "candidates.html", {
-        "candidates": candidates,
-        "total": total,
-        "total_pages": total_pages,
-        "current_page": 1,
-        "current_city": city,
-        "current_ai_worth": ai_worth,
-        "current_status": status,
-        "cities": CITIES,
-    })
-
-
-@app.get("/candidates/table")
-async def candidates_table(request: Request, city: str = "", ai_worth: str = "", status: str = "", page: int = 1):
+async def candidates_page(request: Request, city: str = "", ai_worth: str = "1", status: str = "", page: int = 1):
     db = _get_db()
     city_slug = city or None
     ai_failed = True if ai_worth == "failed" else None
@@ -375,10 +331,10 @@ async def candidates_table(request: Request, city: str = "", ai_worth: str = "",
     status_filter = status or None
     limit = 50
     offset = (page - 1) * limit
-    candidates = await db.list_candidates(city_slug, ai_filter, ai_failed, status_filter, limit, offset)
+    candidates = await db.list_candidates(city_slug, ai_filter, ai_failed, status_filter, limit=limit, offset=offset)
     total = await db.count_candidates(city_slug, ai_filter, ai_failed, status_filter)
     total_pages = max(1, (total + limit - 1) // limit)
-    return templates.TemplateResponse(request, "partials/candidate_table.html", {
+    return templates.TemplateResponse(request, "candidates.html", {
         "candidates": candidates,
         "total": total,
         "total_pages": total_pages,
@@ -386,6 +342,7 @@ async def candidates_table(request: Request, city: str = "", ai_worth: str = "",
         "current_city": city,
         "current_ai_worth": ai_worth,
         "current_status": status,
+        "cities": CITIES,
     })
 
 
