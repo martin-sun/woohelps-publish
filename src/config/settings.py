@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # 浏览器（空值=本地启动 Chromium，非空=连接远程 CDP）
     BROWSER_WS_ENDPOINT: str = ""
 
+    # 代理设置（用于绕过 WAF / 反爬，格式: http://host:port 或 socks5://host:port）
+    PROXY_SERVER: str = ""
+    PROXY_USERNAME: str = ""
+    PROXY_PASSWORD: str = ""
+
     # 管理界面
     ADMIN_PASSWORD: str = ""  # 可选，设置后管理界面启用 Basic Auth
 
