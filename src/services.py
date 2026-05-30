@@ -1,14 +1,10 @@
-import argparse
 import asyncio
 import json
-import signal
 from datetime import datetime, timezone
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from loguru import logger
 
 from src.ai.engine import AIEngine, DATE_WINDOW_DAYS, filter_by_date
-
 from src.config.settings import CITIES, get_settings
 from src.dedup.deduplicator import compute_content_hash, compute_html_hash
 from src.publisher.woohelps import WoohelpsPublisher, parse_fee_amount
@@ -300,39 +296,3 @@ async def run_once(city: str | None = None):
             await discover_city(city_slug, db, ai_engine)
 
     logger.info("Discover complete")
-
-
-async def run_scheduled():
-    """定时调度 — 每天 06:00 UTC（加拿大东部凌晨 1-2 点）"""
-    scheduler = AsyncIOScheduler(timezone="UTC")
-    scheduler.add_job(run_once, "cron", hour=6, minute=0, id="daily_scrape")
-    scheduler.start()
-    logger.info("Scheduler started: daily at 06:00 UTC (Canadian early morning)")
-
-    stop_event = asyncio.Event()
-
-    def _signal_handler(*_):
-        stop_event.set()
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _signal_handler)
-
-    await stop_event.wait()
-    scheduler.shutdown()
-
-
-def main():
-    parser = argparse.ArgumentParser(description="加拿大活动自动发布系统")
-    parser.add_argument("--city", help="只处理指定城市 (如 toronto)")
-    parser.add_argument("--schedule", action="store_true", help="启动定时调度模式")
-    args = parser.parse_args()
-
-    if args.schedule:
-        asyncio.run(run_scheduled())
-    else:
-        asyncio.run(run_once(city=args.city))
-
-
-if __name__ == "__main__":
-    main()

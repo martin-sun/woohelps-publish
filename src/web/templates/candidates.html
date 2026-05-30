@@ -7,7 +7,7 @@
 <!-- 发现新活动 -->
 <details class="bg-white rounded-lg border mb-4">
     <summary class="px-4 py-3 cursor-pointer font-semibold text-gray-700 hover:bg-gray-50">发现新活动</summary>
-    <form hx-post="/discover/start" hx-target="body" hx-swap="innerHTML" class="px-4 pb-4 pt-2">
+    <form hx-post="/activities/discover/start" hx-target="body" hx-swap="innerHTML" class="px-4 pb-4 pt-2">
         <div class="mb-3">
             <div class="flex gap-2 mb-2">
                 <button type="button" onclick="document.querySelectorAll('.city-cb').forEach(cb => cb.checked = true)"
@@ -30,7 +30,7 @@
 
 <!-- 筛选栏 -->
 <div class="bg-white rounded-lg border p-4 mb-4">
-    <form hx-get="/candidates" hx-target="#candidate-table" hx-select="#candidate-table" hx-swap="innerHTML" hx-push-url="true" class="flex flex-wrap gap-4 items-end">
+    <form hx-get="/activities/candidates" hx-target="#candidate-table" hx-select="#candidate-table" hx-swap="innerHTML" hx-push-url="true" class="flex flex-wrap gap-4 items-end">
         <div>
             <label class="block text-xs text-gray-500 mb-1">城市</label>
             <select name="city" class="border rounded px-3 py-1.5 text-sm">

@@ -12,7 +12,7 @@ from loguru import logger
 
 from src.ai.engine import AIEngine
 from src.config.settings import CITIES, get_settings
-from src.main import (
+from src.services import (
     discover_city,
     fetch_one_candidate,
     publish_one,
@@ -118,14 +118,8 @@ app = FastAPI(dependencies=[Depends(verify_auth)], lifespan=lifespan)
 
 
 @app.get("/")
-async def dashboard(request: Request):
-    db = _get_db()
-    stats = await db.count_by_city_and_status()
-    candidate_stats = await db.count_candidates_by_city()
-    tasks = await db.list_recent_scrape_tasks(10)
-    return templates.TemplateResponse(request, "dashboard.html", {
-        "stats": stats, "candidate_stats": candidate_stats, "tasks": tasks, "cities": CITIES,
-    })
+async def root_redirect():
+    return RedirectResponse(url="/activities", status_code=307)
 
 
 @app.get("/activities")
@@ -262,7 +256,7 @@ async def task_status(request: Request, task_id: int):
 async def delete_task(task_id: int, request: Request):
     db = _get_db()
     await db.delete_scrape_task(task_id)
-    referer = request.headers.get("referer", "/candidates")
+    referer = request.headers.get("referer", "/activities/candidates")
     return RedirectResponse(url=referer, status_code=303)
 
 
@@ -270,7 +264,7 @@ async def delete_task(task_id: int, request: Request):
 async def clear_tasks(request: Request):
     db = _get_db()
     await db.clear_scrape_tasks()
-    referer = request.headers.get("referer", "/candidates")
+    referer = request.headers.get("referer", "/activities/candidates")
     return RedirectResponse(url=referer, status_code=303)
 
 
@@ -280,7 +274,7 @@ _discover_guard = asyncio.Lock()
 _discover_running = False
 
 
-@app.post("/discover/start")
+@app.post("/activities/discover/start")
 async def start_discover(request: Request):
     global _discover_running
 
@@ -288,7 +282,7 @@ async def start_discover(request: Request):
     form = await request.form()
     city_slugs = form.getlist("city_slugs")
     if not city_slugs:
-        return RedirectResponse(url="/candidates", status_code=303)
+        return RedirectResponse(url="/activities/candidates", status_code=303)
 
     async with _discover_guard:
         if _discover_running:
@@ -322,7 +316,7 @@ async def start_discover(request: Request):
 
 # --- Candidate routes ---
 
-@app.get("/candidates")
+@app.get("/activities/candidates")
 async def candidates_page(request: Request, city: str = "", ai_worth: str = "1", status: str = "", page: int = 1):
     db = _get_db()
     city_slug = city or None
@@ -346,13 +340,13 @@ async def candidates_page(request: Request, city: str = "", ai_worth: str = "1",
     })
 
 
-@app.post("/candidates/select")
+@app.post("/activities/candidates/select")
 async def candidates_select(request: Request):
     db = _get_db()
     form = await request.form()
     candidate_ids = [int(x) for x in form.getlist("candidate_ids")]
     if not candidate_ids:
-        return RedirectResponse(url="/candidates", status_code=303)
+        return RedirectResponse(url="/activities/candidates", status_code=303)
 
     await db.update_candidate_status(candidate_ids, "selected")
     ai_engine = _ai_engine
@@ -380,25 +374,25 @@ async def candidates_select(request: Request):
     return RedirectResponse(url="/tasks", status_code=303)
 
 
-@app.post("/candidates/reject")
+@app.post("/activities/candidates/reject")
 async def candidates_reject(request: Request):
     db = _get_db()
     form = await request.form()
     candidate_ids = [int(x) for x in form.getlist("candidate_ids")]
     if candidate_ids:
         await db.update_candidate_status(candidate_ids, "rejected")
-    referer = request.headers.get("referer", "/candidates")
+    referer = request.headers.get("referer", "/activities/candidates")
     return RedirectResponse(url=referer, status_code=303)
 
 
-@app.post("/candidates/delete")
+@app.post("/activities/candidates/delete")
 async def candidates_delete(request: Request):
     db = _get_db()
     form = await request.form()
     candidate_ids = [int(x) for x in form.getlist("candidate_ids")]
     if candidate_ids:
         await db.delete_candidates(candidate_ids)
-    referer = request.headers.get("referer", "/candidates")
+    referer = request.headers.get("referer", "/activities/candidates")
     return RedirectResponse(url=referer, status_code=303)
 
 
@@ -406,7 +400,7 @@ _refilter_guard = asyncio.Lock()
 _refilter_running = False
 
 
-@app.post("/candidates/refilter")
+@app.post("/activities/candidates/refilter")
 async def candidates_refilter(request: Request):
     global _refilter_running
 
@@ -417,7 +411,7 @@ async def candidates_refilter(request: Request):
     candidates = await db.get_candidates_to_refilter(city)
     if not candidates:
         logger.info(f"[refilter] No failed candidates for city={city}")
-        return RedirectResponse(url="/candidates", status_code=303)
+        return RedirectResponse(url="/activities/candidates", status_code=303)
 
     async with _refilter_guard:
         if _refilter_running:
@@ -465,9 +459,44 @@ async def candidates_refilter(request: Request):
             _refilter_running = False
 
     asyncio.create_task(_run())
-    referer = request.headers.get("referer", "/candidates")
+    referer = request.headers.get("referer", "/activities/candidates")
     return RedirectResponse(url=referer, status_code=303)
 
+
+# --- Property placeholder routes ---
+
+@app.get("/properties")
+async def properties_page(request: Request):
+    return templates.TemplateResponse(request, "placeholder.html", {
+        "title": "房源列表",
+        "message": "房源列表功能开发中",
+    })
+
+
+@app.get("/properties/candidates")
+async def property_candidates_page(request: Request):
+    return templates.TemplateResponse(request, "placeholder.html", {
+        "title": "房源候选",
+        "message": "房源候选功能开发中",
+    })
+
+
+# --- News placeholder routes ---
+
+@app.get("/news")
+async def news_page(request: Request):
+    return templates.TemplateResponse(request, "placeholder.html", {
+        "title": "新闻列表",
+        "message": "新闻列表功能开发中",
+    })
+
+
+@app.get("/news/candidates")
+async def news_candidates_page(request: Request):
+    return templates.TemplateResponse(request, "placeholder.html", {
+        "title": "新闻候选",
+        "message": "新闻候选功能开发中",
+    })
 
 
 if __name__ == "__main__":

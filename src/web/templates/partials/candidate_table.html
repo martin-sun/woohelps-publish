@@ -1,6 +1,6 @@
 <!-- 操作栏 -->
 <div class="flex gap-3 mb-4">
-    <form action="/candidates/refilter" method="post" class="flex gap-2 items-center">
+    <form action="/activities/candidates/refilter" method="post" class="flex gap-2 items-center">
         <input type="hidden" name="city" value="{{ current_city }}">
         <button type="submit" class="bg-yellow-600 text-white px-4 py-2 rounded text-sm hover:bg-yellow-700">
             重新 AI 过滤
@@ -86,12 +86,12 @@
             <td class="px-3 py-2">
                 <div class="flex gap-1 flex-wrap">
                     {% if not c.fetched_detail and c.human_status != "selected" %}
-                    <form action="/candidates/select" method="post" class="inline">
+                    <form action="/activities/candidates/select" method="post" class="inline">
                         <input type="hidden" name="candidate_ids" value="{{ c.id }}">
                         <button type="submit" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">抓取</button>
                     </form>
                     {% endif %}
-                    <form action="/candidates/delete" method="post" class="inline" onsubmit="return confirm('确定删除？')">
+                    <form action="/activities/candidates/delete" method="post" class="inline" onsubmit="return confirm('确定删除？')">
                         <input type="hidden" name="candidate_ids" value="{{ c.id }}">
                         <button type="submit" class="text-xs bg-red-50 text-red-600 px-2 py-1 rounded hover:bg-red-100">删除</button>
                     </form>
@@ -109,7 +109,7 @@
             {% if p == current_page %}
             <span class="px-3 py-1 bg-blue-600 text-white rounded">{{ p }}</span>
             {% else %}
-            <a hx-get="/candidates?city={{ current_city }}&ai_worth={{ current_ai_worth }}&status={{ current_status }}&page={{ p }}"
+            <a hx-get="/activities/candidates?city={{ current_city }}&ai_worth={{ current_ai_worth }}&status={{ current_status }}&page={{ p }}"
                hx-target="#candidate-table" hx-select="#candidate-table" hx-swap="innerHTML" hx-push-url="true"
                class="px-3 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 cursor-pointer">{{ p }}</a>
             {% endif %}
@@ -120,7 +120,7 @@
     <!-- 批量操作 -->
     <div class="px-4 py-3 border-t bg-gray-50 flex gap-3 items-center">
         <span class="text-sm text-gray-500" id="cand-selected-count">已选 0 个</span>
-        <button onclick="candBatchAction('/candidates/select')" class="bg-blue-600 text-white px-4 py-1.5 rounded text-sm hover:bg-blue-700">批量抓取</button>
+        <button onclick="candBatchAction('/activities/candidates/select')" class="bg-blue-600 text-white px-4 py-1.5 rounded text-sm hover:bg-blue-700">批量抓取</button>
         <button onclick="candBatchDelete()" class="bg-red-600 text-white px-4 py-1.5 rounded text-sm hover:bg-red-700">批量删除</button>
     </div>
 
@@ -153,7 +153,7 @@
         const ids = getCheckedIds();
         if (!ids.length) return;
         if (!confirm('确定删除选中的 ' + ids.length + ' 条活动？')) return;
-        candBatchAction('/candidates/delete');
+        candBatchAction('/activities/candidates/delete');
     }
     </script>
 

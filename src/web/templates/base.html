@@ -6,16 +6,50 @@
     <title>{% block title %}加拿大活动管理{% endblock %}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+        .nav-dropdown:hover .dropdown-menu { display: block; }
+    </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
     <nav class="bg-white border-b">
         <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-            <a href="/" class="font-bold text-lg text-gray-800">加拿大活动管理</a>
-            <div class="flex gap-6 text-sm">
-                <a href="/" class="text-gray-600 hover:text-gray-900">Dashboard</a>
-                <a href="/candidates" class="text-gray-600 hover:text-gray-900">候选活动</a>
-                <a href="/activities" class="text-gray-600 hover:text-gray-900">活动列表</a>
-                <a href="/tasks" class="text-gray-600 hover:text-gray-900">任务监控</a>
+            <a href="/activities" class="font-bold text-lg text-gray-800">内容发布管理</a>
+            <div class="flex gap-1 text-sm items-center">
+                <!-- 活动 -->
+                <div class="nav-dropdown relative">
+                    <button class="px-3 py-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded flex items-center gap-1 cursor-pointer">
+                        活动
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                    </button>
+                    <div class="dropdown-menu hidden absolute top-full left-0 mt-0 w-32 bg-white border rounded-lg shadow-lg py-1 z-50">
+                        <a href="/activities/candidates" class="block px-4 py-2 text-gray-700 hover:bg-gray-50">候选列表</a>
+                        <a href="/activities" class="block px-4 py-2 text-gray-700 hover:bg-gray-50">内容列表</a>
+                    </div>
+                </div>
+                <!-- 房源 -->
+                <div class="nav-dropdown relative">
+                    <button class="px-3 py-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded flex items-center gap-1 cursor-pointer">
+                        房源
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                    </button>
+                    <div class="dropdown-menu hidden absolute top-full left-0 mt-0 w-32 bg-white border rounded-lg shadow-lg py-1 z-50">
+                        <a href="/properties/candidates" class="block px-4 py-2 text-gray-700 hover:bg-gray-50">候选列表</a>
+                        <a href="/properties" class="block px-4 py-2 text-gray-700 hover:bg-gray-50">内容列表</a>
+                    </div>
+                </div>
+                <!-- 新闻 -->
+                <div class="nav-dropdown relative">
+                    <button class="px-3 py-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded flex items-center gap-1 cursor-pointer">
+                        新闻
+                        <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                    </button>
+                    <div class="dropdown-menu hidden absolute top-full left-0 mt-0 w-32 bg-white border rounded-lg shadow-lg py-1 z-50">
+                        <a href="/news/candidates" class="block px-4 py-2 text-gray-700 hover:bg-gray-50">候选列表</a>
+                        <a href="/news" class="block px-4 py-2 text-gray-700 hover:bg-gray-50">内容列表</a>
+                    </div>
+                </div>
+                <!-- 任务监控 -->
+                <a href="/tasks" class="px-3 py-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded">任务监控</a>
             </div>
         </div>
     </nav>

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} - 内容发布管理{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-center min-h-[60vh]">
+    <div class="text-center">
+        <div class="text-6xl mb-4">🏗️</div>
+        <h1 class="text-xl font-bold text-gray-800 mb-2">{{ message }}</h1>
+        <p class="text-gray-500 text-sm">该功能将在后续版本中上线</p>
+        <a href="/activities" class="inline-block mt-4 text-blue-600 hover:underline text-sm">返回活动列表 &rarr;</a>
+    </div>
+</div>
+{% endblock %}
