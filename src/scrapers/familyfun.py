@@ -4,7 +4,7 @@ from loguru import logger
 
 from src.config.settings import get_settings
 from src.scrapers.base import BaseScraper
-from src.scrapers.browser import launch_browser
+from src.scrapers.browser import launch_browser, new_stealth_context
 
 FAMILYFUN_CITY_SLUGS = {
     "toronto": "toronto",
@@ -38,9 +38,11 @@ class FamilyFunCanadaScraper(BaseScraper):
             logger.warning("FamilyFunCanada scraper requires ai_engine for LLM extraction")
             return []
 
+        settings = get_settings()
         async with async_playwright() as p:
-            browser = await launch_browser(p, get_settings())
-            page = await browser.new_page()
+            browser = await launch_browser(p, settings)
+            context = await new_stealth_context(browser, settings, city_slug=city_slug)
+            page = await context.new_page()
 
             page_htmls: list[tuple[str, str]] = []
 
@@ -62,6 +64,7 @@ class FamilyFunCanadaScraper(BaseScraper):
                 page_htmls.append((url, html))
                 await self._delay()
 
+            await context.close()
             await browser.close()
 
         if not page_htmls:

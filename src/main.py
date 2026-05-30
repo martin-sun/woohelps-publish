@@ -14,7 +14,7 @@ from src.dedup.deduplicator import compute_content_hash, compute_html_hash
 from src.publisher.woohelps import WoohelpsPublisher, parse_fee_amount
 from src.scrapers.familyfun import FamilyFunCanadaScraper
 from src.scrapers.todocanada import TodoCanadaScraper
-from src.scrapers.browser import launch_browser
+from src.scrapers.browser import launch_browser, new_stealth_context
 from src.storage.db import Database
 
 SCRAPERS = {
@@ -93,14 +93,10 @@ async def fetch_selected_details(
 
     from playwright.async_api import async_playwright
 
+    settings = get_settings()
     async with async_playwright() as p:
-        browser = await launch_browser(p, get_settings())
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ),
-        )
+        browser = await launch_browser(p, settings)
+        context = await new_stealth_context(browser, settings, city_slug=city_slug)
 
         for cand in candidates:
             try:
@@ -160,14 +156,10 @@ async def fetch_one_candidate(cand: dict, db: Database, ai_engine: AIEngine) -> 
     """抓取单个 candidate 的详情页 + AI 处理，返回新 activity 数量"""
     from playwright.async_api import async_playwright
 
+    settings = get_settings()
     async with async_playwright() as p:
-        browser = await launch_browser(p, get_settings())
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ),
-        )
+        browser = await launch_browser(p, settings)
+        context = await new_stealth_context(browser, settings, city_slug=cand["city_slug"])
         try:
             raw_page = await _fetch_single_page(
                 context, cand["source"], cand["source_url"], cand["city_slug"],
