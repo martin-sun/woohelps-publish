@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}房源候选 - 加拿大活动管理{% endblock %}
+
+{% block content %}
+<h1 class="text-xl font-bold text-gray-800 mb-4">房源候选 ({{ total }})</h1>
+
+<!-- 操作栏 -->
+<div class="bg-white rounded-lg border p-4 mb-4">
+    <form class="flex flex-wrap gap-4 items-end" method="get" action="/properties/candidates">
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">经纪</label>
+            <select name="agent" class="border rounded px-3 py-1.5 text-sm">
+                <option value="">全部</option>
+                {% for a in agents %}
+                <option value="{{ a.id }}" {% if current_agent == a.id|string %}selected{% endif %}>{{ a.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">状态</label>
+            <select name="status" class="border rounded px-3 py-1.5 text-sm">
+                <option value="">全部</option>
+                <option value="pending" {% if current_status == 'pending' %}selected{% endif %}>待处理</option>
+                <option value="selected" {% if current_status == 'selected' %}selected{% endif %}>已选中</option>
+                <option value="rejected" {% if current_status == 'rejected' %}selected{% endif %}>已拒绝</option>
+            </select>
+        </div>
+        <button type="submit" class="bg-gray-100 text-gray-700 px-4 py-1.5 rounded text-sm hover:bg-gray-200">筛选</button>
+    </form>
+
+    <div class="flex flex-wrap gap-3 mt-4 border-t pt-4">
+        <button type="submit" form="batch-form" formaction="/properties/candidates/select" class="bg-green-600 text-white px-4 py-2 rounded text-sm hover:bg-green-700">选中</button>
+        <button type="submit" form="batch-form" formaction="/properties/candidates/reject" class="bg-red-600 text-white px-4 py-2 rounded text-sm hover:bg-red-700">拒绝</button>
+        <button type="submit" form="batch-form" formaction="/properties/candidates/fetch" class="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700">抓取并处理</button>
+        <input type="hidden" name="agent_id" value="{{ current_agent }}" form="batch-form">
+    </div>
+</div>
+
+<!-- 候选列表 -->
+<form id="batch-form" method="post">
+<div class="bg-white rounded-lg border">
+    <table class="w-full text-sm">
+        <thead class="bg-gray-50 border-b">
+            <tr>
+                <th class="px-3 py-3"><input type="checkbox" onclick="document.querySelectorAll('.candidate-cb').forEach(cb => cb.checked = this.checked)" class="rounded border-gray-300"></th>
+                <th class="px-3 py-3 text-left font-medium text-gray-600">ID</th>
+                <th class="px-3 py-3 text-left font-medium text-gray-600">地址/标题</th>
+                <th class="px-3 py-3 text-left font-medium text-gray-600">价格</th>
+                <th class="px-3 py-3 text-left font-medium text-gray-600">房型</th>
+                <th class="px-3 py-3 text-left font-medium text-gray-600">卧室/浴室</th>
+                <th class="px-3 py-3 text-left font-medium text-gray-600">状态</th>
+                <th class="px-3 py-3 text-left font-medium text-gray-600">人工</th>
+                <th class="px-3 py-3 text-left font-medium text-gray-600">详情</th>
+                <th class="px-3 py-3 text-left font-medium text-gray-600">Property</th>
+                <th class="px-3 py-3 text-left font-medium text-gray-600">操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for c in candidates %}
+            <tr class="border-b hover:bg-gray-50">
+                <td class="px-3 py-3">
+                    <input type="checkbox" name="candidate_ids" value="{{ c.id }}" class="candidate-cb rounded border-gray-300">
+                </td>
+                <td class="px-3 py-3">{{ c.id }}</td>
+                <td class="px-3 py-3">
+                    <a href="{{ c.source_url }}" target="_blank" class="text-blue-600 hover:underline">{{ c.title or c.address }}</a>
+                    <div class="text-xs text-gray-500">{{ c.city_slug }}</div>
+                </td>
+                <td class="px-3 py-3">{{ c.price or '-' }}</td>
+                <td class="px-3 py-3">{{ c.property_type or '-' }}</td>
+                <td class="px-3 py-3">{{ c.bedrooms or '-' }} / {{ c.bathrooms or '-' }}</td>
+                <td class="px-3 py-3">
+                    <span class="text-xs px-2 py-1 rounded
+                        {% if c.listing_status == 'active' %}bg-green-100 text-green-700{% elif c.listing_status == 'price_changed' %}bg-yellow-100 text-yellow-700{% elif c.listing_status == 'delisted' %}bg-gray-100 text-gray-600{% else %}bg-blue-100 text-blue-700{% endif %}">
+                        {{ c.listing_status }}
+                    </span>
+                </td>
+                <td class="px-3 py-3">{{ c.human_status }}</td>
+                <td class="px-3 py-3">{% if c.fetched_detail %}✅{% else %}❌{% endif %}</td>
+                <td class="px-3 py-3">{% if c.property_id %}✅ {{ c.property_id }}{% else %}❌{% endif %}</td>
+                <td class="px-3 py-3">
+                    <form action="/properties/candidates/{{ c.id }}/fetch" method="post" class="inline">
+                        <button type="submit" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">抓取并处理</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="11" class="px-4 py-8 text-center text-gray-500">暂无候选房源</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+</form>
+
+<!-- 分页 -->
+{% if total_pages > 1 %}
+<div class="flex justify-center gap-2 mt-4">
+    {% for p in range(1, total_pages + 1) %}
+    <a href="?agent={{ current_agent }}&status={{ current_status }}&page={{ p }}"
+       class="px-3 py-1 rounded text-sm {% if p == current_page %}bg-blue-600 text-white{% else %}bg-white border text-gray-700 hover:bg-gray-50{% endif %}">
+        {{ p }}
+    </a>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

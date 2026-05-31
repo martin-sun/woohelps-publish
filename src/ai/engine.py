@@ -10,6 +10,7 @@ from loguru import logger
 
 from src.config.settings import CITIES, CITY_TIMEZONES
 from src.models.activity import ProcessedActivity, RawPage
+from src.models.property import PropertyCandidate, Property
 
 EXTRACT_LIST_PROMPT = """你是一个专业的网页内容提取助手。请从以下活动列表页的 HTML 中提取所有活动条目的摘要信息。
 
@@ -517,3 +518,202 @@ class AIEngine:
             ))
 
         return activities
+
+
+# ── 房产翻译/润色 Prompt ──
+
+PROPERTY_PROMPT = """你是一位专业的加拿大房产文案翻译和润色专家。你的任务是将英文房源信息翻译为地道的中文，生成精炼的房产介绍，适合华人买家快速浏览。
+
+## 输入数据
+
+城市: {city}
+
+房源信息:
+{listing_json}
+
+## 任务
+
+1. **title_zh**：简洁有力的中文标题，包含城市名、社区名、房型、卧室/浴室数
+2. **description_zh**：200字以内的中文摘要，突出房源核心卖点（用于列表页展示）
+3. **content_zh**：精炼的房源要点描述，用"·"符号分隔，每段聚焦一个维度。不要长篇大论，只提取最重要的信息。
+4. **highlights**：5-8个核心亮点短语（中文），每个短语简短有力
+5. **year_built**：从房源描述中提取建造年份（如"1988"），如果描述中未提及则留空字符串
+5. 地址、人名、机构名、MLS号码保持英文原文，不要翻译
+6. 面积单位保持原文（sqft），可在括号内标注近似平方米（1 sqft ≈ 0.093 m²）
+
+## content_zh 写作要求
+
+这是给用户在手机端阅读的房源详情，必须精炼、结构化、信息密度高。
+
+格式示例：
+· 黄金地段：位于XXX社区，紧邻XXX公园，步行可达XXX商圈、
+· 卧室与浴室：X间卧室、X间浴室，主卧配有步入式衣帽间、
+· 主层空间：宽敞客厅，橡木厨房配不锈钢电器，餐厅推花园门可至宽大露台、
+· 地下室：明亮家庭房，另设第三间卧室和X件套浴室、
+· 实用配置：中央吸尘、自动喷灌系统，连体车库直通地下室与后院、
+· 户外区域：私密围栏庭院，厨房外有大露台、
+· 社区政策：宠物友好（有限制大部分🉑）、
+· 生活便利：靠近学校、XXX商圈，可快速驶入Circle Drive、
+
+写作原则：
+- 每段以"·"开头，段内用"、"分隔并列信息
+- 段末以"、"结尾（与下一段形成连续列表感）
+- 结构化数据（价格、卧室数、面积等）已在输入中提供，content_zh 不需要重复罗列，只从 description_en 中提取和总结**额外卖点**
+- 如果 description_en 为空或信息极少，content_zh 可以简短（3-5个要点即可）
+- 面向加拿大华人社区，语气亲切自然
+- 禁止使用"该房源"、"本文"等生硬表达
+- 不要加"总结"、"结语"等段落
+
+## 输出格式
+
+请严格按以下 JSON 格式输出，只输出 JSON，不要有其他内容:
+{{
+    "title_zh": "中文标题",
+    "description_zh": "中文摘要（200字以内）",
+    "content_zh": "· 要点1：具体内容、\n· 要点2：具体内容、\n· 要点3：具体内容、",
+    "highlights": ["亮点1", "亮点2", "亮点3"],
+    "year_built": "1988",
+    "suitable": true/false,
+    "suitable_reason": "如果不适合，说明原因；如果适合，写'信息完整，描述积极'"
+}}
+
+## 质量评估标准
+
+请从**内容质量**角度判断是否适合发布，标记 suitable=false 的情况：
+- 房源描述质量极差（如全是乱码、无意义重复、或明显虚假信息）
+- 正文内容过于空洞，无法让买家了解房源实际状况
+- 地址或房源信息存在明显矛盾
+
+注意：图片数量、描述长度、价格区间、房源类型等硬性指标由系统代码层自动校验，你只需关注内容质量和语义合理性。
+"""
+
+
+# ── 内容质量门禁 ──
+
+PROPERTY_TYPE_BLACKLIST = {"Vacant Land", "Parking", "Agriculture", "Commercial"}
+MIN_PHOTO_COUNT = 3
+MIN_DESCRIPTION_LENGTH = 100
+MIN_PRICE = 30_000
+MAX_PRICE = 5_000_000
+
+
+def quality_gate(candidate: PropertyCandidate, llm_output: dict, description_en: str = "") -> tuple[bool, str]:
+    """内容质量门禁：代码层二次校验"""
+    if len(candidate.photo_urls) < MIN_PHOTO_COUNT:
+        return False, f"图片少于 {MIN_PHOTO_COUNT} 张"
+    if not description_en or len(description_en.strip()) < MIN_DESCRIPTION_LENGTH:
+        return False, "描述过短"
+    if candidate.property_type in PROPERTY_TYPE_BLACKLIST:
+        return False, f"类型排除: {candidate.property_type}"
+    price = candidate.price_numeric or 0
+    if not (MIN_PRICE <= price <= MAX_PRICE):
+        return False, "价格异常"
+    if not all([candidate.address, candidate.bedrooms, candidate.bathrooms, candidate.price]):
+        return False, "关键字段缺失"
+    if not llm_output.get("suitable", True):
+        return False, f"LLM 判定不适合: {llm_output.get('suitable_reason', '')}"
+    return True, "通过"
+
+
+# ── 房产处理方法 ──
+
+async def process_property(
+    ai_engine: "AIEngine",
+    candidate: PropertyCandidate,
+    description_en: str,
+    agent_info: dict | None = None,
+) -> Property | None:
+    """调用 LLM 翻译/润色房源信息，返回 Property 对象"""
+
+    # 构建 LLM 输入
+    city_name = CITIES.get(candidate.city_slug, {}).get("eng_name", candidate.city_slug.title())
+    listing_input = {
+        "mls_number": candidate.mls_number,
+        "price": candidate.price,
+        "price_numeric": candidate.price_numeric,
+        "address": candidate.address,
+        "property_type": candidate.property_type,
+        "bedrooms": candidate.bedrooms,
+        "bathrooms": candidate.bathrooms,
+        "living_area": candidate.living_area,
+        "lot_size": candidate.lot_size,
+        "year_built": candidate.year_built or "",
+        "stories": candidate.stories or "",
+        "features": candidate.features or "",
+        "parking": candidate.parking or "",
+        "open_house": candidate.open_house,
+        "description_en": description_en,
+        "photo_count": len(candidate.photo_urls),
+        "latitude": candidate.latitude,
+        "longitude": candidate.longitude,
+        "agents": [agent_info] if agent_info else [],
+    }
+
+    async with ai_engine._lock:
+        response = await ai_engine.client.messages.create(
+            model=ai_engine.model,
+            max_tokens=ai_engine.max_tokens,
+            messages=[{
+                "role": "user",
+                "content": PROPERTY_PROMPT.format(
+                    city=city_name,
+                    listing_json=json.dumps(listing_input, ensure_ascii=False, indent=2),
+                ),
+            }],
+        )
+
+    text = response.content[0].text
+    json_text = _extract_json(text)
+    if not json_text:
+        logger.warning(f"No JSON found in property processing for {candidate.source_id}")
+        return None
+
+    result = json.loads(json_text)
+
+    # 质量门禁
+    ok, reason = quality_gate(candidate, result, description_en)
+    logger.info(f"[DEBUG] quality_gate for {candidate.source_id}: ok={ok}, reason={reason}, "
+                f"photos={len(candidate.photo_urls)}, desc_len={len(description_en or '')}, "
+                f"price={candidate.price_numeric}, type={candidate.property_type}, "
+                f"suitable={result.get('suitable')}, suitable_reason={result.get('suitable_reason')}")
+    if not ok:
+        logger.info(f"Quality gate rejected {candidate.source_id}: {reason}")
+        return None
+
+    # 构建 content_hash
+    content = f"{result['title_zh']}|{result['content_zh']}|{candidate.address}"
+    content_hash = hashlib.md5(content.encode()).hexdigest()
+
+    return Property(
+        source=candidate.source,
+        source_id=candidate.source_id,
+        source_url=candidate.source_url,
+        city_slug=candidate.city_slug,
+        agent_id=candidate.agent_id,
+        title_en=candidate.title or candidate.address or "",
+        title_zh=result["title_zh"],
+        price=candidate.price or "",
+        price_numeric=candidate.price_numeric,
+        mls_number=candidate.mls_number,
+        property_type=candidate.property_type,
+        bedrooms=candidate.bedrooms,
+        bathrooms=candidate.bathrooms,
+        living_area=candidate.living_area,
+        lot_size=candidate.lot_size,
+        year_built=candidate.year_built or result.get("year_built") or "",
+        stories=candidate.stories,
+        address=candidate.address or "",
+        postal_code=candidate.postal_code,
+        latitude=candidate.latitude,
+        longitude=candidate.longitude,
+        description_zh=result.get("description_zh"),
+        content_zh=result.get("content_zh", ""),
+        highlights=result.get("highlights", []),
+        open_house=candidate.open_house,
+        image_urls=candidate.photo_urls,
+        agent_name=agent_info.get("name") if agent_info else None,
+        agent_brokerage=agent_info.get("brokerage") if agent_info else None,
+        agent_phone=agent_info.get("phone") if agent_info else None,
+        status="pending",
+        content_hash=content_hash,
+    )

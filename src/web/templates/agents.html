@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}经纪管理 - 加拿大活动管理{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-bold text-gray-800">经纪管理 ({{ agents|length }})</h1>
+    <a href="/agents/add" class="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700">添加经纪</a>
+</div>
+
+<div class="bg-white rounded-lg border">
+    <table class="w-full text-sm">
+        <thead class="bg-gray-50 border-b">
+            <tr>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">ID</th>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">Realtor ID</th>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">姓名</th>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">中文名</th>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">经纪公司</th>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">电话</th>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">覆盖城市</th>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">状态</th>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for a in agents %}
+            <tr class="border-b hover:bg-gray-50">
+                <td class="px-4 py-3">{{ a.id }}</td>
+                <td class="px-4 py-3">{{ a.agent_id }}</td>
+                <td class="px-4 py-3">{{ a.name }}</td>
+                <td class="px-4 py-3">{{ a.name_zh or '-' }}</td>
+                <td class="px-4 py-3">{{ a.brokerage or '-' }}</td>
+                <td class="px-4 py-3">{{ a.phone or '-' }}</td>
+                <td class="px-4 py-3">{{ a.city_slugs }}</td>
+                <td class="px-4 py-3">
+                    {% if a.is_active %}
+                    <span class="text-green-600">启用</span>
+                    {% else %}
+                    <span class="text-gray-400">禁用</span>
+                    {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                    <a href="/agents/{{ a.id }}/edit" class="text-gray-600 hover:text-gray-800 text-xs mr-2">编辑</a>
+                    <form action="/agents/{{ a.id }}/scrape" method="post" class="inline">
+                        <button type="submit" class="text-blue-600 hover:text-blue-800 text-xs mr-2">爬取</button>
+                    </form>
+                    <form action="/agents/{{ a.id }}/delete" method="post" class="inline" onsubmit="return confirm('确定删除？')">
+                        <button type="submit" class="text-red-600 hover:text-red-800 text-xs">删除</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="9" class="px-4 py-8 text-center text-gray-500">暂无经纪</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

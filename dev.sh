@@ -15,7 +15,7 @@ usage() {
 case "${1:-}" in
     web)
         echo "Starting web admin UI on http://127.0.0.1:8000"
-        uv run python -m src.web.app
+        uv run uvicorn src.web.app:app --host 127.0.0.1 --port 8000 --reload
         ;;
     install)
         uv sync

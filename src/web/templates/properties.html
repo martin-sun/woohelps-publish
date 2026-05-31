@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}房源列表 - 加拿大活动管理{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-bold text-gray-800">房源列表 ({{ total }})</h1>
+</div>
+
+<!-- 筛选栏 -->
+<div class="bg-white rounded-lg border p-4 mb-4">
+    <form class="flex flex-wrap gap-4 items-end" method="get" action="/properties">
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">城市</label>
+            <select name="city" class="border rounded px-3 py-1.5 text-sm">
+                <option value="">全部</option>
+                {% for slug, info in cities.items() %}
+                <option value="{{ slug }}" {% if current_city == slug %}selected{% endif %}>{{ info.eng_name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">状态</label>
+            <select name="status" class="border rounded px-3 py-1.5 text-sm">
+                <option value="">全部</option>
+                <option value="pending" {% if current_status == 'pending' %}selected{% endif %}>待发布</option>
+                <option value="published" {% if current_status == 'published' %}selected{% endif %}>已发布</option>
+                <option value="failed" {% if current_status == 'failed' %}selected{% endif %}>失败</option>
+                <option value="price_changed" {% if current_status == 'price_changed' %}selected{% endif %}>价格变动</option>
+            </select>
+        </div>
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">经纪</label>
+            <select name="agent" class="border rounded px-3 py-1.5 text-sm">
+                <option value="">全部</option>
+                {% for a in agents %}
+                <option value="{{ a.id }}" {% if current_agent == a.id|string %}selected{% endif %}>{{ a.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <button type="submit" class="bg-blue-600 text-white px-4 py-1.5 rounded text-sm hover:bg-blue-700">筛选</button>
+    </form>
+</div>
+
+<!-- 房源列表 -->
+<div class="bg-white rounded-lg border">
+    <table class="w-full text-sm">
+        <thead class="bg-gray-50 border-b">
+            <tr>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">ID</th>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">标题</th>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">价格</th>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">城市</th>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">房型</th>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">状态</th>
+                <th class="px-4 py-3 text-left font-medium text-gray-600">操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in properties %}
+            <tr class="border-b hover:bg-gray-50">
+                <td class="px-4 py-3">{{ p.id }}</td>
+                <td class="px-4 py-3">
+                    <a href="/property/{{ p.id }}" class="text-blue-600 hover:underline font-medium">{{ p.title_zh }}</a>
+                    <div class="text-xs text-gray-500">{{ p.title_en }}</div>
+                </td>
+                <td class="px-4 py-3">{{ p.price }}</td>
+                <td class="px-4 py-3">{{ p.city_slug }}</td>
+                <td class="px-4 py-3">{{ p.property_type or '-' }}</td>
+                <td class="px-4 py-3">
+                    <span class="text-xs px-2 py-1 rounded
+                        {% if p.status == 'published' %}bg-green-100 text-green-700{% elif p.status == 'failed' %}bg-red-100 text-red-700{% elif p.status == 'price_changed' %}bg-yellow-100 text-yellow-700{% else %}bg-blue-100 text-blue-700{% endif %}">
+                        {{ p.status }}
+                    </span>
+                </td>
+                <td class="px-4 py-3">
+                    {% if p.status != 'published' %}
+                    <form action="/properties/{{ p.id }}/publish" method="post" class="inline">
+                        <button type="submit" class="text-blue-600 hover:text-blue-800 text-xs">发布</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7" class="px-4 py-8 text-center text-gray-500">暂无房源</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- 分页 -->
+{% if total_pages > 1 %}
+<div class="flex justify-center gap-2 mt-4">
+    {% for p in range(1, total_pages + 1) %}
+    <a href="?city={{ current_city }}&status={{ current_status }}&agent={{ current_agent }}&page={{ p }}"
+       class="px-3 py-1 rounded text-sm {% if p == current_page %}bg-blue-600 text-white{% else %}bg-white border text-gray-700 hover:bg-gray-50{% endif %}">
+        {{ p }}
+    </a>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

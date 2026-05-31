@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}{{ property.title_zh }} - 房源详情{% endblock %}
+
+{% set type_map = {
+    'Single Family': '独立平房',
+    'Condo': '公寓',
+    'Townhouse': '联排别墅',
+    'Recreational': '度假屋',
+    'Vacant Land': '空地',
+    'Agriculture': '农场',
+    'Commercial': '商业',
+    'Parking': '车位',
+    'Multi-family': '多单元住宅',
+    'Duplex': '双拼屋',
+    'Triplex': '三拼屋',
+    'Fourplex': '四拼屋',
+    'Business': '商铺',
+    'Retail': '零售商铺',
+    'Hospitality': '酒店/旅馆',
+    'Industrial': '工业厂房',
+    'Office': '办公楼',
+    'Mixed Use': '混合用途',
+    'House': '独立屋',
+    'Apartment': '公寓',
+} %}
+{% set property_type_zh = type_map.get(property.property_type, property.property_type) %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <a href="/properties" class="text-blue-600 hover:underline text-sm">&larr; 返回列表</a>
+    {% if property.status == 'pending' %}
+    <form action="/properties/{{ property.id }}/publish" method="post" class="inline">
+        <button type="submit" class="bg-green-600 text-white px-4 py-2 rounded text-sm hover:bg-green-700">发布到海外新生活</button>
+    </form>
+    {% elif property.status == 'published' %}
+    <span class="text-sm text-green-600">已发布</span>
+    {% endif %}
+</div>
+
+<div class="bg-white rounded-lg border p-6">
+    <!-- 标题区 -->
+    <div class="mb-6">
+        <h1 class="text-xl font-bold text-gray-800">{{ property.title_zh }}</h1>
+        <p class="text-sm text-gray-500 mt-1">{{ property.title_en }}</p>
+        <div class="mt-2 flex flex-wrap gap-2 text-sm">
+            <span class="px-2 py-0.5 bg-blue-50 text-blue-700 rounded">{{ property.price }}</span>
+            <span class="px-2 py-0.5 bg-gray-100 text-gray-600 rounded">{{ property_type_zh or property.property_type or '-' }}</span>
+            <span class="px-2 py-0.5 bg-gray-100 text-gray-600 rounded">{{ property.bedrooms or '-' }} 卧 / {{ property.bathrooms or '-' }} 卫</span>
+            {% if property.mls_number %}
+            <span class="px-2 py-0.5 bg-gray-100 text-gray-600 rounded">MLS: {{ property.mls_number }}</span>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- 图片 -->
+    {% if property.image_urls and property.image_urls | length > 0 %}
+    <div class="flex gap-2 mb-6 overflow-x-auto pb-2">
+        {% for url in property.image_urls[:20] %}
+        <img src="{{ url }}" class="w-32 h-32 object-cover rounded flex-shrink-0" loading="lazy">
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- 基本信息 -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 text-sm">
+        {% if property.living_area %}
+        <div class="bg-gray-50 rounded p-3">
+            <div class="text-gray-400 text-xs">室内面积</div>
+            <div class="font-medium">{{ property.living_area }}</div>
+        </div>
+        {% endif %}
+        {% if property.lot_size %}
+        <div class="bg-gray-50 rounded p-3">
+            <div class="text-gray-400 text-xs">地块面积</div>
+            <div class="font-medium">{{ property.lot_size }}</div>
+        </div>
+        {% endif %}
+        {% if property.year_built %}
+        <div class="bg-gray-50 rounded p-3">
+            <div class="text-gray-400 text-xs">建造年份</div>
+            <div class="font-medium">{{ property.year_built }}</div>
+        </div>
+        {% endif %}
+        {% if property.stories %}
+        <div class="bg-gray-50 rounded p-3">
+            <div class="text-gray-400 text-xs">楼层</div>
+            <div class="font-medium">{{ property.stories }}</div>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- 地址 -->
+    <div class="mb-6 text-sm">
+        <div class="text-gray-400 text-xs mb-1">地址</div>
+        <div class="font-medium">{{ property.address }}</div>
+        {% if property.postal_code %}
+        <div class="text-gray-500">{{ property.postal_code }}</div>
+        {% endif %}
+    </div>
+
+    <!-- 描述 -->
+    {% if property.content_zh %}
+    <div class="mb-6">
+        <h2 class="font-semibold text-gray-700 mb-2">房源描述</h2>
+        <div class="text-sm text-gray-600 leading-relaxed whitespace-pre-line">{{ property.content_zh }}</div>
+    </div>
+    {% endif %}
+
+    <!-- 亮点 -->
+    {% if property.highlights and property.highlights | length > 0 %}
+    <div class="mb-6">
+        <h2 class="font-semibold text-gray-700 mb-2">亮点</h2>
+        <div class="flex flex-wrap gap-2">
+            {% for h in property.highlights %}
+            <span class="px-2 py-1 bg-blue-50 text-blue-700 rounded text-sm">{{ h }}</span>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- 经纪信息 -->
+    {% if property.agent_name %}
+    <div class="mb-6 text-sm">
+        <h2 class="font-semibold text-gray-700 mb-2">经纪信息</h2>
+        <div class="bg-gray-50 rounded p-3">
+            <div class="font-medium">{{ property.agent_name }}</div>
+            {% if property.agent_brokerage %}
+            <div class="text-gray-500">{{ property.agent_brokerage }}</div>
+            {% endif %}
+            {% if property.agent_phone %}
+            <div class="text-gray-500">{{ property.agent_phone }}</div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- 来源 -->
+    <div class="text-xs text-gray-400">
+        来源: {{ property.source }} &middot;
+        <a href="{{ property.source_url }}" target="_blank" class="text-blue-500 hover:underline">查看原始页面</a>
+    </div>
+
+    {% if property.publish_error %}
+    <div class="mt-4 p-3 bg-red-50 border border-red-200 rounded text-sm text-red-600">
+        发布失败: {{ property.publish_error }}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

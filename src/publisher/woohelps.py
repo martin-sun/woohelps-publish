@@ -7,6 +7,7 @@ import httpx
 from loguru import logger
 
 from src.models.activity import ProcessedActivity
+from src.models.property import Property
 
 DO_SPACES_BASE = "https://woohelps.sgp1.digitaloceanspaces.com"
 
@@ -28,9 +29,10 @@ def parse_fee_amount(price: str | None) -> tuple[float, bool]:
 
 
 class WoohelpsPublisher:
-    def __init__(self, base_url: str, login_session: str):
+    def __init__(self, base_url: str, login_session: str, user_id: str = "1"):
         self.base_url = base_url
         self.login_session = login_session
+        self.user_id = user_id
         self.client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
         self._city_map: dict[str, int] = {}
 
@@ -66,7 +68,11 @@ class WoohelpsPublisher:
 
     # --- Image upload ---
 
-    async def _upload_image(self, image_url: str) -> str | None:
+    async def upload_image(self, image_url: str) -> str | None:
+        """下载外部图片并上传到 DO Spaces，返回自有 URL。失败返回 None。"""
+        return await self._upload_image_impl(image_url)
+
+    async def _upload_image_impl(self, image_url: str) -> str | None:
         """下载外部图片并上传到 DO Spaces，返回自有 URL。失败返回 None。"""
         try:
             # 1. 下载图片
@@ -93,12 +99,12 @@ class WoohelpsPublisher:
             elif raw_name.lower().endswith(".webp"):
                 content_type = "image/webp"
 
-            # 3. 获取预签名 URL — 用 system user id=1
+            # 3. 获取预签名 URL
             headers = {"LOGIN-SESSION": self.login_session}
             presign_resp = await self.client.get(
                 f"{self.base_url}/api/applet/aws/generate-presigned-url",
                 params={
-                    "userId": "1",
+                    "userId": self.user_id,
                     "fileType": "image",
                     "fileName": raw_name,
                     "contentType": content_type,
@@ -146,7 +152,7 @@ class WoohelpsPublisher:
             return []
         results = []
         for url in image_urls:
-            uploaded = await self._upload_image(url)
+            uploaded = await self._upload_image_impl(url)
             if uploaded:
                 results.append(uploaded)
         return results
@@ -208,6 +214,80 @@ class WoohelpsPublisher:
                 return result
             if errcode == 500 and attempt < 2:
                 logger.warning(f"Publish got 500 for {activity.source_id}, retrying ({attempt + 1}/3)...")
+                await asyncio.sleep(2 ** attempt)
+                continue
+            return result
+
+        return result
+
+
+    async def publish_property(self, prop: Property, city_id: int) -> dict:
+        """发布房产（售房）到海外新生活平台"""
+
+        # 1. 下载并上传所有图片到自有存储
+        all_source_urls = []
+        if prop.image_url:
+            all_source_urls.append(prop.image_url)
+        for url in prop.image_urls:
+            if url and url not in all_source_urls:
+                all_source_urls.append(url)
+
+        uploaded_urls = await self._upload_all_images(all_source_urls)
+        if not uploaded_urls:
+            logger.error(f"No images uploaded for property {prop.source_id}, aborting publish")
+            return {"errcode": -1, "errmsg": "图片上传失败"}
+
+        # 2. 构建 tags：首个标签为房源类型（中文映射），后面接亮点标签
+        PROPERTY_TYPE_TAGS: dict[str, str] = {
+            "Single Family": "独立屋",
+            "Condo": "公寓",
+            "Townhouse": "联排别墅",
+            "Semi-Detached": "半独立屋",
+            "Duplex": " duplex",
+            "Triplex": " triplex",
+            "Multi-Family": "多单元住宅",
+            "Commercial": "商业地产",
+            "Agriculture": "农地",
+            "Vacant Land": "空地",
+            "Parking": "车位",
+        }
+        type_tag = PROPERTY_TYPE_TAGS.get(prop.property_type or "", prop.property_type or "")
+        tags = [{"name": type_tag}] if type_tag else []
+        for tag in prop.highlights[:4]:
+            tags.append({"name": tag})
+        if not tags:
+            tags = []
+
+        # 3. 构建 payload
+        data = {
+            "name": prop.title_zh,
+            "description": prop.content_zh,
+            "price": str(prop.price_numeric or 0),
+            "price_type": "sellhouse",
+            "city_id": city_id,
+            "address": prop.address,
+            "locations": json.dumps({
+                "latitude": prop.latitude or 0,
+                "longitude": prop.longitude or 0,
+            }),
+            "imgs": json.dumps(uploaded_urls),
+            "tags": json.dumps(tags),
+            "phone": prop.agent_phone or "",
+        }
+        headers = {"LOGIN-SESSION": self.login_session}
+
+        for attempt in range(3):
+            response = await self.client.post(
+                f"{self.base_url}/api/applet/rental/release",
+                data=data,
+                headers=headers,
+            )
+            result = response.json()
+            errcode = result.get("errcode", -1)
+            if errcode == 0 or errcode in (101, 201):
+                return result
+            if errcode == 500 and attempt < 2:
+                logger.warning(f"Property publish got 500 for {prop.source_id}, retrying ({attempt + 1}/3)...")
                 await asyncio.sleep(2 ** attempt)
                 continue
             return result

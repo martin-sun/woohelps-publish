@@ -6,6 +6,40 @@
     <title>{% block title %}加拿大活动管理{% endblock %}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script>
+    // CSRF Token 自动注入：读取 cookie 并插入所有表单
+    (function() {
+        function getCookie(name) {
+            const value = "; " + document.cookie;
+            const parts = value.split("; " + name + "=");
+            if (parts.length === 2) return parts.pop().split(";").shift();
+        }
+        const csrfToken = getCookie("csrf_token");
+        if (csrfToken) {
+            function injectCsrf() {
+                document.querySelectorAll("form").forEach(function(form) {
+                    let input = form.querySelector('input[name="csrf_token"]');
+                    if (!input) {
+                        input = document.createElement("input");
+                        input.type = "hidden";
+                        input.name = "csrf_token";
+                        form.appendChild(input);
+                    }
+                    input.value = csrfToken;
+                });
+            }
+            document.addEventListener("DOMContentLoaded", function() {
+                injectCsrf();
+                // htmx 局部刷新后重新注入
+                document.body.addEventListener("htmx:afterSwap", injectCsrf);
+                // 对 htmx 请求也注入 CSRF header
+                document.body.addEventListener("htmx:configRequest", function(evt) {
+                    evt.detail.headers["X-CSRF-Token"] = csrfToken;
+                });
+            });
+        }
+    })();
+    </script>
     <style>
         .nav-dropdown:hover .dropdown-menu { display: block; }
     </style>
@@ -33,6 +67,7 @@
                         <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                     </button>
                     <div class="dropdown-menu hidden absolute top-full left-0 mt-0 w-32 bg-white border rounded-lg shadow-lg py-1 z-50">
+                        <a href="/agents" class="block px-4 py-2 text-gray-700 hover:bg-gray-50">经纪</a>
                         <a href="/properties/candidates" class="block px-4 py-2 text-gray-700 hover:bg-gray-50">候选列表</a>
                         <a href="/properties" class="block px-4 py-2 text-gray-700 hover:bg-gray-50">内容列表</a>
                     </div>

@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     # 海外新生活平台 API
     WOOHELPS_API_URL: str = "https://www.woohelps.com"
     WOOHELPS_LOGIN_SESSION: str
+    WOOHELPS_USER_ID: str = "1"
 
     # 数据库
     DATABASE_URL: str = "postgresql://localhost/activities"
@@ -50,6 +51,12 @@ CITY_TIMEZONES: dict[str, str] = {
     "saskatoon": "America/Regina",
     "regina": "America/Regina",
     "moncton": "America/Moncton",
+    "st-johns": "America/St_Johns",
+    "halifax": "America/Halifax",
+    "charlottetown": "America/Halifax",
+    "fredericton": "America/Moncton",
+    "kelowna": "America/Vancouver",
+    "victoria": "America/Vancouver",
 }
 
 # 城市坐标与元信息
@@ -64,6 +71,12 @@ CITIES: dict[str, dict] = {
     "saskatoon": {"eng_name": "Saskatoon", "lat": 52.1332, "lng": -106.6700, "radius": "50km"},
     "regina": {"eng_name": "Regina", "lat": 50.4452, "lng": -104.6189, "radius": "50km"},
     "moncton": {"eng_name": "Moncton", "lat": 46.0878, "lng": -64.7782, "radius": "50km"},
+    "st-johns": {"eng_name": "St. John's", "lat": 47.5615, "lng": -52.7126, "radius": "50km"},
+    "halifax": {"eng_name": "Halifax", "lat": 44.6488, "lng": -63.5752, "radius": "50km"},
+    "charlottetown": {"eng_name": "Charlottetown", "lat": 46.2382, "lng": -63.1311, "radius": "50km"},
+    "fredericton": {"eng_name": "Fredericton", "lat": 45.9636, "lng": -66.6431, "radius": "50km"},
+    "kelowna": {"eng_name": "Kelowna", "lat": 49.8880, "lng": -119.4960, "radius": "50km"},
+    "victoria": {"eng_name": "Victoria", "lat": 48.4284, "lng": -123.3656, "radius": "50km"},
 }
 
 
