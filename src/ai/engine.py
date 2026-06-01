@@ -531,15 +531,26 @@ PROPERTY_PROMPT = """你是一位专业的加拿大房产文案翻译和润色�
 房源信息:
 {listing_json}
 
+## raw_data 字段说明
+
+`raw_data` 是从 Realtor.ca 详情页提取的完整结构化数据，包含以下区块：
+- `summary`: Property Summary（房产类型、楼层、面积、社区、建造年份、地税等）
+- `building`: Building（浴室数、电器、地下室类型、建筑风格、供暖方式等）
+- `measurements`: Measurements（详细尺寸）
+- `rooms`: Rooms（房间列表，含楼层、类型、尺寸）
+- `land`: Land（地块特征、围栏、临街面等）
+
+请优先从 `raw_data` 各区块中提取信息，生成更准确、更丰富的中文内容。如果 `raw_data` 为空，则仅使用基础字段。
+
 ## 任务
 
 1. **title_zh**：简洁有力的中文标题，包含城市名、社区名、房型、卧室/浴室数
 2. **description_zh**：200字以内的中文摘要，突出房源核心卖点（用于列表页展示）
-3. **content_zh**：精炼的房源要点描述，用"·"符号分隔，每段聚焦一个维度。不要长篇大论，只提取最重要的信息。
+3. **content_zh**：精炼的房源要点描述，用"·"符号分隔，每段聚焦一个维度。不要长篇大论，只提取最重要的信息。优先从 `raw_data` 和 `description_en` 中提取卖点。
 4. **highlights**：5-8个核心亮点短语（中文），每个短语简短有力
-5. **year_built**：从房源描述中提取建造年份（如"1988"），如果描述中未提及则留空字符串
-5. 地址、人名、机构名、MLS号码保持英文原文，不要翻译
-6. 面积单位保持原文（sqft），可在括号内标注近似平方米（1 sqft ≈ 0.093 m²）
+5. **year_built**：优先从 `raw_data.summary.built_in` 提取建造年份（如"1988"），如果不存在则从描述中提取，仍未找到则留空字符串
+6. 地址、人名、机构名、MLS号码保持英文原文，不要翻译
+7. 面积单位保持原文（sqft），可在括号内标注近似平方米（1 sqft ≈ 0.093 m²）
 
 ## content_zh 写作要求
 
@@ -583,36 +594,7 @@ PROPERTY_PROMPT = """你是一位专业的加拿大房产文案翻译和润色�
 - 房源描述质量极差（如全是乱码、无意义重复、或明显虚假信息）
 - 正文内容过于空洞，无法让买家了解房源实际状况
 - 地址或房源信息存在明显矛盾
-
-注意：图片数量、描述长度、价格区间、房源类型等硬性指标由系统代码层自动校验，你只需关注内容质量和语义合理性。
 """
-
-
-# ── 内容质量门禁 ──
-
-PROPERTY_TYPE_BLACKLIST = {"Vacant Land", "Parking", "Agriculture", "Commercial"}
-MIN_PHOTO_COUNT = 3
-MIN_DESCRIPTION_LENGTH = 100
-MIN_PRICE = 30_000
-MAX_PRICE = 5_000_000
-
-
-def quality_gate(candidate: PropertyCandidate, llm_output: dict, description_en: str = "") -> tuple[bool, str]:
-    """内容质量门禁：代码层二次校验"""
-    if len(candidate.photo_urls) < MIN_PHOTO_COUNT:
-        return False, f"图片少于 {MIN_PHOTO_COUNT} 张"
-    if not description_en or len(description_en.strip()) < MIN_DESCRIPTION_LENGTH:
-        return False, "描述过短"
-    if candidate.property_type in PROPERTY_TYPE_BLACKLIST:
-        return False, f"类型排除: {candidate.property_type}"
-    price = candidate.price_numeric or 0
-    if not (MIN_PRICE <= price <= MAX_PRICE):
-        return False, "价格异常"
-    if not all([candidate.address, candidate.bedrooms, candidate.bathrooms, candidate.price]):
-        return False, "关键字段缺失"
-    if not llm_output.get("suitable", True):
-        return False, f"LLM 判定不适合: {llm_output.get('suitable_reason', '')}"
-    return True, "通过"
 
 
 # ── 房产处理方法 ──
@@ -635,18 +617,13 @@ async def process_property(
         "property_type": candidate.property_type,
         "bedrooms": candidate.bedrooms,
         "bathrooms": candidate.bathrooms,
-        "living_area": candidate.living_area,
-        "lot_size": candidate.lot_size,
-        "year_built": candidate.year_built or "",
-        "stories": candidate.stories or "",
-        "features": candidate.features or "",
-        "parking": candidate.parking or "",
         "open_house": candidate.open_house,
         "description_en": description_en,
         "photo_count": len(candidate.photo_urls),
         "latitude": candidate.latitude,
         "longitude": candidate.longitude,
         "agents": [agent_info] if agent_info else [],
+        "raw_data": candidate.raw_data or {},
     }
 
     async with ai_engine._lock:
@@ -670,15 +647,14 @@ async def process_property(
 
     result = json.loads(json_text)
 
-    # 质量门禁
-    ok, reason = quality_gate(candidate, result, description_en)
-    logger.info(f"[DEBUG] quality_gate for {candidate.source_id}: ok={ok}, reason={reason}, "
-                f"photos={len(candidate.photo_urls)}, desc_len={len(description_en or '')}, "
-                f"price={candidate.price_numeric}, type={candidate.property_type}, "
-                f"suitable={result.get('suitable')}, suitable_reason={result.get('suitable_reason')}")
-    if not ok:
-        logger.info(f"Quality gate rejected {candidate.source_id}: {reason}")
+    # 质量门禁：只保留 LLM 的内容质量判断
+    if not result.get("suitable", True):
+        logger.info(f"LLM rejected {candidate.source_id}: {result.get('suitable_reason', '')}")
         return None
+
+    logger.info(f"[DEBUG] property {candidate.source_id}: photos={len(candidate.photo_urls)}, "
+                f"desc_len={len(description_en or '')}, price={candidate.price_numeric}, "
+                f"type={candidate.property_type}, suitable={result.get('suitable')}")
 
     # 构建 content_hash
     content = f"{result['title_zh']}|{result['content_zh']}|{candidate.address}"
@@ -698,10 +674,6 @@ async def process_property(
         property_type=candidate.property_type,
         bedrooms=candidate.bedrooms,
         bathrooms=candidate.bathrooms,
-        living_area=candidate.living_area,
-        lot_size=candidate.lot_size,
-        year_built=candidate.year_built or result.get("year_built") or "",
-        stories=candidate.stories,
         address=candidate.address or "",
         postal_code=candidate.postal_code,
         latitude=candidate.latitude,
@@ -716,4 +688,5 @@ async def process_property(
         agent_phone=agent_info.get("phone") if agent_info else None,
         status="pending",
         content_hash=content_hash,
+        raw_data=candidate.raw_data or {},
     )

@@ -25,6 +25,14 @@
 } %}
 {% set property_type_zh = type_map.get(property.property_type, property.property_type) %}
 
+{# raw_data 解析 — 所有详细字段从这里读取 #}
+{% set raw = property.raw_data or {} %}
+{% set summary = raw.get('summary', {}) %}
+{% set building = raw.get('building', {}) %}
+{% set measurements = raw.get('measurements', {}) %}
+{% set rooms = raw.get('rooms', []) %}
+{% set land = raw.get('land', {}) %}
+
 {% block content %}
 <div class="flex items-center justify-between mb-4">
     <a href="/properties" class="text-blue-600 hover:underline text-sm">&larr; 返回列表</a>
@@ -61,33 +69,224 @@
     </div>
     {% endif %}
 
-    <!-- 基本信息 -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 text-sm">
-        {% if property.living_area %}
-        <div class="bg-gray-50 rounded p-3">
-            <div class="text-gray-400 text-xs">室内面积</div>
-            <div class="font-medium">{{ property.living_area }}</div>
+    <!-- Property Summary -->
+    {% if summary %}
+    <div class="mb-6">
+        <h2 class="font-semibold text-gray-700 mb-3">房产概况</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            {% if summary.get('property_type') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">房产类型</div>
+                <div class="font-medium">{{ type_map.get(summary.property_type, summary.property_type) }}</div>
+            </div>
+            {% endif %}
+            {% if summary.get('building_type') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">建筑类型</div>
+                <div class="font-medium">{{ summary.building_type }}</div>
+            </div>
+            {% endif %}
+            {% if summary.get('storeys') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">楼层</div>
+                <div class="font-medium">{{ summary.storeys }}</div>
+            </div>
+            {% endif %}
+            {% if summary.get('square_footage') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">室内面积</div>
+                <div class="font-medium">{{ summary.square_footage }}</div>
+            </div>
+            {% endif %}
+            {% if summary.get('land_size') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">地块面积</div>
+                <div class="font-medium">{{ summary.land_size }}</div>
+            </div>
+            {% endif %}
+            {% if summary.get('built_in') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">建造年份</div>
+                <div class="font-medium">{{ summary.built_in }}</div>
+            </div>
+            {% endif %}
+            {% if summary.get('neighbourhood') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">社区</div>
+                <div class="font-medium">{{ summary.neighbourhood }}</div>
+            </div>
+            {% endif %}
+            {% if summary.get('title') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">产权类型</div>
+                <div class="font-medium">{{ summary.title }}</div>
+            </div>
+            {% endif %}
+            {% if summary.get('annual_property_taxes') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">年度地税</div>
+                <div class="font-medium">{{ summary.annual_property_taxes }}</div>
+            </div>
+            {% endif %}
+            {% if summary.get('parking_type') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">停车类型</div>
+                <div class="font-medium">{{ summary.parking_type }}</div>
+            </div>
+            {% endif %}
+            {% if summary.get('time_on_realtor') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">挂牌时间</div>
+                <div class="font-medium">{{ summary.time_on_realtor }}</div>
+            </div>
+            {% endif %}
         </div>
-        {% endif %}
-        {% if property.lot_size %}
-        <div class="bg-gray-50 rounded p-3">
-            <div class="text-gray-400 text-xs">地块面积</div>
-            <div class="font-medium">{{ property.lot_size }}</div>
-        </div>
-        {% endif %}
-        {% if property.year_built %}
-        <div class="bg-gray-50 rounded p-3">
-            <div class="text-gray-400 text-xs">建造年份</div>
-            <div class="font-medium">{{ property.year_built }}</div>
-        </div>
-        {% endif %}
-        {% if property.stories %}
-        <div class="bg-gray-50 rounded p-3">
-            <div class="text-gray-400 text-xs">楼层</div>
-            <div class="font-medium">{{ property.stories }}</div>
-        </div>
-        {% endif %}
     </div>
+    {% endif %}
+
+    <!-- Building -->
+    {% if building %}
+    <div class="mb-6">
+        <h2 class="font-semibold text-gray-700 mb-3">建筑详情</h2>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+            {% if building.get('bathrooms_total') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">浴室总数</div>
+                <div class="font-medium">{{ building.bathrooms_total }}</div>
+            </div>
+            {% endif %}
+            {% if building.get('appliances') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">电器配置</div>
+                <div class="font-medium">{{ building.appliances }}</div>
+            </div>
+            {% endif %}
+            {% if building.get('basement_type') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">地下室类型</div>
+                <div class="font-medium">{{ building.basement_type }}</div>
+            </div>
+            {% endif %}
+            {% if building.get('architecture_style') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">建筑风格</div>
+                <div class="font-medium">{{ building.architecture_style }}</div>
+            </div>
+            {% endif %}
+            {% if building.get('style') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">房屋样式</div>
+                <div class="font-medium">{{ building.style }}</div>
+            </div>
+            {% endif %}
+            {% if building.get('heating_type') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">供暖方式</div>
+                <div class="font-medium">{{ building.heating_type }}</div>
+            </div>
+            {% endif %}
+            {% if building.get('cooling_type') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">制冷方式</div>
+                <div class="font-medium">{{ building.cooling_type }}</div>
+            </div>
+            {% endif %}
+            {% if building.get('features') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">特色</div>
+                <div class="font-medium">{{ building.features }}</div>
+            </div>
+            {% endif %}
+            {% if building.get('structures') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">附属结构</div>
+                <div class="font-medium">{{ building.structures }}</div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Measurements -->
+    {% if measurements %}
+    <div class="mb-6">
+        <h2 class="font-semibold text-gray-700 mb-3">尺寸测量</h2>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            {% if measurements.get('square_footage') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">室内面积</div>
+                <div class="font-medium">{{ measurements.square_footage }}</div>
+            </div>
+            {% endif %}
+            {% if measurements.get('dimensions') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">尺寸</div>
+                <div class="font-medium">{{ measurements.dimensions }}</div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Rooms -->
+    {% if rooms and rooms | length > 0 %}
+    <div class="mb-6">
+        <h2 class="font-semibold text-gray-700 mb-3">房间列表</h2>
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm border-collapse">
+                <thead>
+                    <tr class="bg-gray-100 text-left">
+                        <th class="p-2 border-b font-medium text-gray-600">楼层</th>
+                        <th class="p-2 border-b font-medium text-gray-600">房间</th>
+                        <th class="p-2 border-b font-medium text-gray-600">尺寸</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for room in rooms %}
+                    <tr class="border-b">
+                        <td class="p-2">{{ room.level or '-' }}</td>
+                        <td class="p-2">{{ room.name or '-' }}</td>
+                        <td class="p-2">{{ room.size or '-' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Land -->
+    {% if land %}
+    <div class="mb-6">
+        <h2 class="font-semibold text-gray-700 mb-3">地块信息</h2>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+            {% if land.get('lot_features') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">地块特征</div>
+                <div class="font-medium">{{ land.lot_features }}</div>
+            </div>
+            {% endif %}
+            {% if land.get('fence') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">围栏</div>
+                <div class="font-medium">{{ land.fence }}</div>
+            </div>
+            {% endif %}
+            {% if land.get('frontage') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">临街面</div>
+                <div class="font-medium">{{ land.frontage }}</div>
+            </div>
+            {% endif %}
+            {% if land.get('landscape_features') %}
+            <div class="bg-gray-50 rounded p-3">
+                <div class="text-gray-400 text-xs">景观特征</div>
+                <div class="font-medium">{{ land.landscape_features }}</div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
 
     <!-- 地址 -->
     <div class="mb-6 text-sm">

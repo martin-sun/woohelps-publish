@@ -10,7 +10,7 @@ from src.config.settings import CITIES, get_settings
 from src.models.property import PropertyCandidate, Property
 from src.publisher.woohelps import WoohelpsPublisher
 from src.scrapers.browser import launch_browser, new_stealth_context
-from src.scrapers.realtorca import fetch_all_listings, fetch_detail_description, parse_city_from_address
+from src.scrapers.realtorca import fetch_all_listings, fetch_property_detail_page, parse_city_from_address
 from src.storage.db import Database
 
 
@@ -53,23 +53,7 @@ async def scrape_agent(agent_row: dict, db: Database) -> dict:
             ]
 
             building = item.get("Building", {}) or {}
-            land = item.get("Land", {}) or {}
             property_data = item.get("Property", {}) or {}
-
-            # 解析停车信息
-            parking_items = property_data.get("Parking", []) or []
-            parking_str = ""
-            if parking_items:
-                parking_parts = []
-                for p in parking_items:
-                    name = p.get("Name", "")
-                    spaces = p.get("Spaces", "")
-                    if name:
-                        part = name
-                        if spaces:
-                            part += f" ({spaces})"
-                        parking_parts.append(part)
-                parking_str = ", ".join(parking_parts)
 
             candidate = PropertyCandidate(
                 city_slug=city_slug,
@@ -84,12 +68,6 @@ async def scrape_agent(agent_row: dict, db: Database) -> dict:
                 property_type=property_data.get("Type"),
                 bedrooms=str(building.get("Bedrooms", "")),
                 bathrooms=str(building.get("BathroomTotal", "")),
-                living_area=building.get("SizeInterior", ""),
-                lot_size=land.get("SizeTotal", ""),
-                year_built=str(building.get("YearBuilt", "")),
-                stories=str(building.get("StoriesTotal", "")),
-                features=land.get("LandscapeFeatures", ""),
-                parking=parking_str,
                 address=address_text,
                 postal_code=item.get("PostalCode", ""),
                 latitude=address_data.get("Latitude"),
@@ -153,12 +131,17 @@ async def fetch_property_details(agent_id: int | None, db: Database, ai_engine: 
 
         for cand in candidates:
             try:
-                # 1. 抓取详情页英文描述 + 图片
-                description, photo_urls = await fetch_detail_description(
+                # 1. 抓取详情页（描述 + 图片 + 结构化数据）
+                detail_page = await fetch_property_detail_page(
                     cand["source_url"], context, max_retries=3, page=shared_page
                 )
+                description = detail_page.description
+                photo_urls = detail_page.photo_urls
+                raw_data = detail_page.raw_data
+
                 await db.update_candidate_description(cand["id"], description)
                 await db.update_candidate_photos(cand["id"], photo_urls)
+                await db.update_candidate_raw_data(cand["id"], raw_data)
                 await db.mark_property_candidate_fetched(cand["id"])
 
                 # 2. 构造 PropertyCandidate 对象
@@ -176,12 +159,6 @@ async def fetch_property_details(agent_id: int | None, db: Database, ai_engine: 
                     property_type=cand["property_type"],
                     bedrooms=cand["bedrooms"],
                     bathrooms=cand["bathrooms"],
-                    living_area=cand["living_area"],
-                    lot_size=cand["lot_size"],
-                    year_built=cand.get("year_built"),
-                    stories=cand.get("stories"),
-                    features=cand.get("features"),
-                    parking=cand.get("parking"),
                     address=cand["address"],
                     postal_code=cand["postal_code"],
                     latitude=float(cand["latitude"]) if cand["latitude"] is not None else None,
@@ -189,6 +166,7 @@ async def fetch_property_details(agent_id: int | None, db: Database, ai_engine: 
                     photo_urls=photo_urls,
                     open_house=json.loads(cand["open_house"]) if cand["open_house"] else [],
                     description_en=description,
+                    raw_data=raw_data,
                 )
 
                 description_en = description or ""
@@ -262,12 +240,6 @@ async def process_property_candidates(
                 property_type=cand["property_type"],
                 bedrooms=cand["bedrooms"],
                 bathrooms=cand["bathrooms"],
-                living_area=cand["living_area"],
-                lot_size=cand["lot_size"],
-                year_built=cand.get("year_built"),
-                stories=cand.get("stories"),
-                features=cand.get("features"),
-                parking=cand.get("parking"),
                 address=cand["address"],
                 postal_code=cand["postal_code"],
                 latitude=float(cand["latitude"]) if cand["latitude"] is not None else None,
@@ -275,6 +247,7 @@ async def process_property_candidates(
                 photo_urls=json.loads(cand["photo_urls"]) if cand["photo_urls"] else [],
                 open_house=json.loads(cand["open_house"]) if cand["open_house"] else [],
                 description_en=cand.get("description_en"),
+                raw_data=json.loads(cand["raw_data"]) if cand.get("raw_data") else {},
             )
 
             description_en = cand.get("description_en") or ""
@@ -325,6 +298,15 @@ async def publish_one_property(
     # 加载图片 URL
     image_urls = json.loads(prop_row["image_urls"]) if prop_row["image_urls"] else []
 
+    # 加载 raw_data
+    raw_data = {}
+    if prop_row.get("raw_data"):
+        try:
+            raw_data = json.loads(prop_row["raw_data"]) if isinstance(prop_row["raw_data"], str) else prop_row["raw_data"]
+        except Exception as e:
+            logger.warning(f"Failed to parse raw_data for property {property_id}: {e}")
+            raw_data = {}
+
     prop = Property(
         id=prop_row["id"],
         source=prop_row["source"],
@@ -340,8 +322,6 @@ async def publish_one_property(
         property_type=prop_row["property_type"],
         bedrooms=prop_row["bedrooms"],
         bathrooms=prop_row["bathrooms"],
-        living_area=prop_row["living_area"],
-        lot_size=prop_row["lot_size"],
         address=prop_row["address"],
         postal_code=prop_row["postal_code"],
         latitude=prop_row["latitude"],
@@ -355,6 +335,7 @@ async def publish_one_property(
         agent_brokerage=prop_row["agent_brokerage"],
         agent_phone=prop_row["agent_phone"],
         status=prop_row["status"],
+        raw_data=raw_data,
     )
 
     result = await publisher.publish_property(prop, city_id)
@@ -390,12 +371,17 @@ async def fetch_single_property(candidate_id: int, db: Database, ai_engine: AIEn
         page = await context.new_page()
 
         try:
-            # 1. 抓取详情页英文描述 + 图片
-            description, detail_photo_urls = await fetch_detail_description(
+            # 1. 抓取详情页（描述 + 图片 + 结构化数据）
+            detail_page = await fetch_property_detail_page(
                 cand["source_url"], context, max_retries=3, page=page
             )
+            description = detail_page.description
+            detail_photo_urls = detail_page.photo_urls
+            raw_data = detail_page.raw_data
+
             await db.update_candidate_description(cand["id"], description)
             await db.update_candidate_photos(cand["id"], detail_photo_urls)
+            await db.update_candidate_raw_data(cand["id"], raw_data)
             await db.mark_property_candidate_fetched(cand["id"])
 
             # 2. 构造 PropertyCandidate 对象
@@ -413,12 +399,6 @@ async def fetch_single_property(candidate_id: int, db: Database, ai_engine: AIEn
                 property_type=cand["property_type"],
                 bedrooms=cand["bedrooms"],
                 bathrooms=cand["bathrooms"],
-                living_area=cand["living_area"],
-                lot_size=cand["lot_size"],
-                year_built=cand.get("year_built"),
-                stories=cand.get("stories"),
-                features=cand.get("features"),
-                parking=cand.get("parking"),
                 address=cand["address"],
                 postal_code=cand["postal_code"],
                 latitude=float(cand["latitude"]) if cand["latitude"] is not None else None,
@@ -426,6 +406,7 @@ async def fetch_single_property(candidate_id: int, db: Database, ai_engine: AIEn
                 photo_urls=detail_photo_urls,
                 open_house=json.loads(cand["open_house"]) if cand["open_house"] else [],
                 description_en=description,
+                raw_data=raw_data,
             )
 
             description_en = description or ""

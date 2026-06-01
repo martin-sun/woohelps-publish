@@ -781,6 +781,14 @@ async def property_detail_page(request: Request, property_id: int):
         prop["image_urls"] = json.loads(prop["image_urls"])
     if isinstance(prop.get("highlights"), str):
         prop["highlights"] = json.loads(prop["highlights"])
+    # raw_data 在 db.get_property 中已解析为 dict；兼容旧数据（无 raw_data 字段）
+    if isinstance(prop.get("raw_data"), str):
+        try:
+            prop["raw_data"] = json.loads(prop["raw_data"])
+        except Exception:
+            prop["raw_data"] = {}
+    elif prop.get("raw_data") is None:
+        prop["raw_data"] = {}
 
     return templates.TemplateResponse(request, "property_detail.html", {"property": prop})
 

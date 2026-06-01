@@ -687,11 +687,11 @@ class Database:
                         """INSERT INTO property_candidates (
                             city_slug, agent_id, source, source_id, source_url, mls_number,
                             title, price, price_numeric, property_type, bedrooms, bathrooms,
-                            living_area, lot_size, address, postal_code, latitude, longitude,
-                            photo_urls, open_house, year_built, stories, features, parking, description_en,
+                            address, postal_code, latitude, longitude,
+                            photo_urls, open_house, description_en, raw_data,
                             listing_status, last_seen_at, miss_count,
                             human_status, fetched_detail, property_id
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, NOW(), 0, $27, $28, $29)
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW(), 0, $22, $23, $24)
                         ON CONFLICT(source, source_id, agent_id) DO UPDATE SET
                             city_slug=EXCLUDED.city_slug,
                             title=EXCLUDED.title,
@@ -700,19 +700,14 @@ class Database:
                             property_type=EXCLUDED.property_type,
                             bedrooms=EXCLUDED.bedrooms,
                             bathrooms=EXCLUDED.bathrooms,
-                            living_area=EXCLUDED.living_area,
-                            lot_size=EXCLUDED.lot_size,
                             address=EXCLUDED.address,
                             postal_code=EXCLUDED.postal_code,
                             latitude=EXCLUDED.latitude,
                             longitude=EXCLUDED.longitude,
                             photo_urls=EXCLUDED.photo_urls,
                             open_house=EXCLUDED.open_house,
-                            year_built=EXCLUDED.year_built,
-                            stories=EXCLUDED.stories,
-                            features=EXCLUDED.features,
-                            parking=EXCLUDED.parking,
                             description_en=EXCLUDED.description_en,
+                            raw_data=EXCLUDED.raw_data,
                             last_seen_at=NOW(),
                             miss_count=0,
                             updated_at=NOW()
@@ -720,10 +715,11 @@ class Database:
                         """,
                         c.city_slug, c.agent_id, c.source, c.source_id, c.source_url, c.mls_number,
                         c.title, c.price, c.price_numeric, c.property_type, c.bedrooms, c.bathrooms,
-                        c.living_area, c.lot_size, c.address, c.postal_code, c.latitude, c.longitude,
+                        c.address, c.postal_code, c.latitude, c.longitude,
                         json.dumps(c.photo_urls, ensure_ascii=False),
                         json.dumps(c.open_house, ensure_ascii=False),
-                        c.year_built, c.stories, c.features, c.parking, c.description_en,
+                        c.description_en,
+                        json.dumps(c.raw_data, ensure_ascii=False) if c.raw_data else None,
                         c.listing_status, c.human_status, c.fetched_detail, c.property_id,
                     )
 
@@ -864,6 +860,13 @@ class Database:
                 json.dumps(photo_urls, ensure_ascii=False), candidate_id,
             )
 
+    async def update_candidate_raw_data(self, candidate_id: int, raw_data: dict) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE property_candidates SET raw_data = $1 WHERE id = $2",
+                json.dumps(raw_data, ensure_ascii=False) if raw_data else None, candidate_id,
+            )
+
     async def get_property_candidates_to_fetch(self, agent_id: int | None = None, limit: int = 20) -> list[dict]:
         conditions = ["human_status = 'selected'", "fetched_detail = FALSE"]
         args: list = []
@@ -911,22 +914,21 @@ class Database:
                 """INSERT INTO properties (
                     source, source_id, source_url, city_slug, agent_id,
                     title_en, title_zh, price, price_numeric, mls_number, property_type,
-                    bedrooms, bathrooms, living_area, lot_size,
-                    year_built, stories, garage,
-                    address, neighborhood, postal_code, latitude, longitude,
+                    bedrooms, bathrooms,
+                    address, postal_code, latitude, longitude,
                     description_zh, content_zh, highlights, open_house,
                     image_url, image_urls,
                     agent_name, agent_brokerage, agent_phone,
-                    status, last_scraped_at, content_hash
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35)
+                    status, last_scraped_at, content_hash,
+                    raw_data
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
                 ON CONFLICT(source, source_id) DO NOTHING
                 RETURNING id
                 """,
                 prop.source, prop.source_id, prop.source_url, prop.city_slug, prop.agent_id,
                 prop.title_en, prop.title_zh, prop.price, prop.price_numeric, prop.mls_number, prop.property_type,
-                prop.bedrooms, prop.bathrooms, prop.living_area, prop.lot_size,
-                prop.year_built, prop.stories, prop.garage,
-                prop.address, prop.neighborhood, prop.postal_code, prop.latitude, prop.longitude,
+                prop.bedrooms, prop.bathrooms,
+                prop.address, prop.postal_code, prop.latitude, prop.longitude,
                 prop.description_zh, prop.content_zh,
                 json.dumps(prop.highlights, ensure_ascii=False),
                 json.dumps(prop.open_house, ensure_ascii=False),
@@ -935,6 +937,7 @@ class Database:
                 prop.agent_name, prop.agent_brokerage, prop.agent_phone,
                 prop.status, prop.last_scraped_at.isoformat() if prop.last_scraped_at else None,
                 prop.content_hash,
+                json.dumps(prop.raw_data, ensure_ascii=False) if prop.raw_data else None,
             )
             if row:
                 return row["id"]
@@ -1004,7 +1007,20 @@ class Database:
             row = await conn.fetchrow(
                 "SELECT * FROM properties WHERE id = $1", property_id,
             )
-            return dict(row) if row else None
+            if not row:
+                return None
+            result = dict(row)
+            # raw_data 可能是 JSONB（dict）或 JSON 字符串，统一为 dict
+            # 注：asyncpg 通常将 JSONB 返回为 Python dict，str 分支为防御性处理
+            raw = result.get("raw_data")
+            if isinstance(raw, str):
+                try:
+                    result["raw_data"] = json.loads(raw)
+                except Exception:
+                    result["raw_data"] = {}
+            elif raw is None:
+                result["raw_data"] = {}
+            return result
 
     async def get_property_by_source(self, source: str, source_id: str) -> dict | None:
         async with self._pool.acquire() as conn:

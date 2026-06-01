@@ -33,7 +33,7 @@ class PropertyCandidate:
     source_url: str = ""
     mls_number: str | None = None
 
-    # 原始摘要
+    # 原始摘要（API 基础字段，用于列表筛选/展示）
     title: str | None = None
     price: str | None = None
     price_numeric: float | None = None
@@ -41,12 +41,6 @@ class PropertyCandidate:
     property_type: str | None = None
     bedrooms: str | None = None
     bathrooms: str | None = None
-    living_area: str | None = None
-    lot_size: str | None = None
-    year_built: str | None = None
-    stories: str | None = None
-    features: str | None = None
-    parking: str | None = None
     address: str | None = None
     postal_code: str | None = None
     latitude: float | None = None
@@ -58,6 +52,9 @@ class PropertyCandidate:
 
     # 详情页描述
     description_en: str | None = None
+
+    # 详情页结构化数据（从 HTML 提取，传递到 AI 处理环节）
+    raw_data: dict = field(default_factory=dict)
 
     # 生命周期
     listing_status: str = "active"              # active / price_changed / sold / delisted
@@ -95,26 +92,12 @@ class Property:
     mls_number: str | None = None
     property_type: str | None = None
 
-    # 房间信息
+    # 房间信息（API 基础字段，列表筛选必需）
     bedrooms: str | None = None
     bathrooms: str | None = None
 
-    # 面积
-    living_area: str | None = None
-    lot_size: str | None = None
-
-    # 建筑信息
-    year_built: str | None = None
-    stories: str | None = None
-    garage: str | None = None
-
-    # 设施与停车
-    features: str | None = None
-    parking: str | None = None
-
     # 地址
     address: str = ""
-    neighborhood: str | None = None
     postal_code: str | None = None
     latitude: float | None = None
     longitude: float | None = None
@@ -144,6 +127,9 @@ class Property:
     publish_error: str | None = None
 
     content_hash: str | None = None
+
+    # 详情页完整结构化数据（JSONB）
+    raw_data: dict = field(default_factory=dict)
 
     created_at: datetime | None = None
     updated_at: datetime | None = None
