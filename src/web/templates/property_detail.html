@@ -300,7 +300,7 @@
     <!-- 描述 -->
     {% if property.content_zh %}
     <div class="mb-6">
-        <h2 class="font-semibold text-gray-700 mb-2">房源描述</h2>
+        <h2 class="font-semibold text-gray-700 mb-2">{% if property.property_type in ['Commercial', 'Business', 'Retail', 'Hospitality', 'Industrial', 'Office', 'Mixed Use', 'Mixed', 'Shopping Center', 'Plaza', 'Strip Mall', 'Warehouse', 'Storefront'] %}投资分析{% else %}房源描述{% endif %}</h2>
         <div class="text-sm text-gray-600 leading-relaxed whitespace-pre-line">{{ property.content_zh }}</div>
     </div>
     {% endif %}
@@ -308,7 +308,7 @@
     <!-- 亮点 -->
     {% if property.highlights and property.highlights | length > 0 %}
     <div class="mb-6">
-        <h2 class="font-semibold text-gray-700 mb-2">亮点</h2>
+        <h2 class="font-semibold text-gray-700 mb-2">{% if property.property_type in ['Commercial', 'Business', 'Retail', 'Hospitality', 'Industrial', 'Office', 'Mixed Use', 'Mixed', 'Shopping Center', 'Plaza', 'Strip Mall', 'Warehouse', 'Storefront'] %}投资亮点{% else %}亮点{% endif %}</h2>
         <div class="flex flex-wrap gap-2">
             {% for h in property.highlights %}
             <span class="px-2 py-1 bg-blue-50 text-blue-700 rounded text-sm">{{ h }}</span>

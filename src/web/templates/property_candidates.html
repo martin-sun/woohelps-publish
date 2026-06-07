@@ -32,12 +32,13 @@
         <button type="submit" form="batch-form" formaction="/properties/candidates/select" class="bg-green-600 text-white px-4 py-2 rounded text-sm hover:bg-green-700">选中</button>
         <button type="submit" form="batch-form" formaction="/properties/candidates/reject" class="bg-red-600 text-white px-4 py-2 rounded text-sm hover:bg-red-700">拒绝</button>
         <button type="submit" form="batch-form" formaction="/properties/candidates/fetch" class="bg-blue-600 text-white px-4 py-2 rounded text-sm hover:bg-blue-700">抓取并处理</button>
-        <input type="hidden" name="agent_id" value="{{ current_agent }}" form="batch-form">
     </div>
 </div>
 
 <!-- 候选列表 -->
 <form id="batch-form" method="post">
+    <input type="hidden" name="agent_id" value="{{ current_agent }}">
+</form>
 <div class="bg-white rounded-lg border">
     <table class="w-full text-sm">
         <thead class="bg-gray-50 border-b">
@@ -59,7 +60,7 @@
             {% for c in candidates %}
             <tr class="border-b hover:bg-gray-50">
                 <td class="px-3 py-3">
-                    <input type="checkbox" name="candidate_ids" value="{{ c.id }}" class="candidate-cb rounded border-gray-300">
+                    <input form="batch-form" type="checkbox" name="candidate_ids" value="{{ c.id }}" class="candidate-cb rounded border-gray-300">
                 </td>
                 <td class="px-3 py-3">{{ c.id }}</td>
                 <td class="px-3 py-3">
@@ -90,7 +91,6 @@
         </tbody>
     </table>
 </div>
-</form>
 
 <!-- 分页 -->
 {% if total_pages > 1 %}

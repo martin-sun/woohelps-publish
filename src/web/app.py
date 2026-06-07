@@ -92,6 +92,36 @@ def _local_time(utc_str: str | None, tz_str: str | None) -> str:
 templates.env.globals["local_time"] = _local_time
 
 
+# --- Fetch Worker (单线程队列，避免并发 Playwright) ---
+_fetch_queue = asyncio.Queue()
+
+
+async def _fetch_worker():
+    """后台 worker：从队列中串行执行房源抓取任务"""
+    db = _get_db()
+    ai_engine = _ai_engine
+    while True:
+        item = await _fetch_queue.get()
+        try:
+            task_id = item["task_id"]
+            if item.get("candidate_id") is not None:
+                await fetch_single_property(item["candidate_id"], db, ai_engine)
+                await db.complete_scrape_task(task_id)
+            else:
+                await fetch_property_details(
+                    item.get("agent_id"), db, ai_engine, candidate_ids=item.get("candidate_ids")
+                )
+                await db.complete_scrape_task(task_id)
+        except Exception as e:
+            logger.error(f"Fetch worker task failed: {e}")
+            try:
+                await db.fail_scrape_task(item["task_id"], str(e))
+            except Exception as db_err:
+                logger.error(f"Failed to mark task as failed: {db_err}")
+        finally:
+            _fetch_queue.task_done()
+
+
 # --- Lifespan ---
 
 
@@ -121,7 +151,15 @@ async def lifespan(app: FastAPI):
             await _db.fail_scrape_task(t["id"], "Server restarted")
 
     logger.info("Web app started")
+
+    _fetch_worker_task = asyncio.create_task(_fetch_worker())
     yield
+
+    _fetch_worker_task.cancel()
+    try:
+        await _fetch_worker_task
+    except asyncio.CancelledError:
+        pass
 
     if _publisher:
         await _publisher.close()
@@ -660,15 +698,16 @@ async def agents_delete(agent_id: int, request: Request):
 # --- Property routes ---
 
 @app.get("/properties")
-async def properties_page(request: Request, city: str = "", status: str = "", agent: str = "", page: int = 1):
+async def properties_page(request: Request, city: str = "", status: str = "", agent: str = "", category: str = "", page: int = 1):
     db = _get_db()
     city_slug = city or None
     status_filter = status or None
     agent_id = int(agent) if agent else None
+    category_filter = category or None
     limit = 50
     offset = (page - 1) * limit
-    properties = await db.list_properties(city_slug, status_filter, agent_id, limit, offset)
-    total = await db.count_properties(city_slug, status_filter, agent_id)
+    properties = await db.list_properties(city_slug, status_filter, agent_id, category_filter, limit, offset)
+    total = await db.count_properties(city_slug, status_filter, agent_id, category_filter)
     total_pages = max(1, (total + limit - 1) // limit)
     agents = await db.list_agents(is_active=True)
     return templates.TemplateResponse(request, "properties.html", {
@@ -679,6 +718,7 @@ async def properties_page(request: Request, city: str = "", status: str = "", ag
         "current_city": city,
         "current_status": status,
         "current_agent": agent,
+        "current_category": category,
         "cities": CITIES,
         "agents": agents,
     })
@@ -731,21 +771,21 @@ async def property_candidates_reject(request: Request):
 @app.post("/properties/candidates/fetch")
 async def property_candidates_fetch(request: Request):
     db = _get_db()
-    ai_engine = _ai_engine
     form = await get_form(request)
     agent_id = int(form.get("agent_id") or 0) or None
+    candidate_ids_raw = form.getlist("candidate_ids")
+    candidate_ids = [int(x) for x in candidate_ids_raw] if candidate_ids_raw else None
 
-    task_id = await db.create_task("fetch_and_process_property", detail=f"agent_id={agent_id}")
+    task_detail = f"agent_id={agent_id}"
+    if candidate_ids:
+        task_detail += f", candidate_ids={candidate_ids}"
+    task_id = await db.create_task("fetch_and_process_property", detail=task_detail)
 
-    async def _run():
-        try:
-            await fetch_property_details(agent_id, db, ai_engine)
-            await db.complete_scrape_task(task_id)
-        except Exception as e:
-            logger.error(f"Fetch & process property details failed: {e}")
-            await db.fail_scrape_task(task_id, str(e))
-
-    asyncio.create_task(_run())
+    await _fetch_queue.put({
+        "task_id": task_id,
+        "agent_id": agent_id,
+        "candidate_ids": candidate_ids,
+    })
     return RedirectResponse(url="/tasks", status_code=303)
 
 
@@ -753,19 +793,13 @@ async def property_candidates_fetch(request: Request):
 async def property_candidate_fetch_single(request: Request, candidate_id: int):
     """单条房源：抓取详情并立即 AI 处理"""
     db = _get_db()
-    ai_engine = _ai_engine
 
     task_id = await db.create_task("fetch_and_process_property", detail=f"candidate_id={candidate_id}")
 
-    async def _run():
-        try:
-            await fetch_single_property(candidate_id, db, ai_engine)
-            await db.complete_scrape_task(task_id)
-        except Exception as e:
-            logger.error(f"Fetch & process single property failed: {e}")
-            await db.fail_scrape_task(task_id, str(e))
-
-    asyncio.create_task(_run())
+    await _fetch_queue.put({
+        "task_id": task_id,
+        "candidate_id": candidate_id,
+    })
     referer = request.headers.get("referer", "/properties/candidates")
     return RedirectResponse(url=referer, status_code=303)
 

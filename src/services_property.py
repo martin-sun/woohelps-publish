@@ -5,7 +5,7 @@ from datetime import datetime
 from loguru import logger
 from playwright.async_api import async_playwright
 
-from src.ai.engine import AIEngine, process_property
+from src.ai.engine import AIEngine, COMMERCIAL_PROPERTY_TYPES, process_property
 from src.config.settings import CITIES, get_settings
 from src.models.property import PropertyCandidate, Property
 from src.publisher.woohelps import WoohelpsPublisher
@@ -108,7 +108,7 @@ async def scrape_agent(agent_row: dict, db: Database) -> dict:
         raise
 
 
-async def fetch_property_details(agent_id: int | None, db: Database, ai_engine: AIEngine):
+async def fetch_property_details(agent_id: int | None, db: Database, ai_engine: AIEngine, candidate_ids: list[int] | None = None):
     """抓取房源详情页描述并立即进行 AI 处理，一步完成。
 
     1. 查询 human_status='selected' 且 fetched_detail=FALSE 的候选
@@ -116,7 +116,11 @@ async def fetch_property_details(agent_id: int | None, db: Database, ai_engine: 
     3. 立即调用 LLM 翻译/润色生成 Property
     4. 保存到 properties 表并关联 candidate
     """
-    candidates = await db.get_property_candidates_to_fetch(agent_id, limit=20)
+    # 如果指定了 candidate_ids，先自动标记为 selected（与单条行为一致）
+    if candidate_ids:
+        await db.update_property_candidate_status(candidate_ids, "selected")
+
+    candidates = await db.get_property_candidates_to_fetch(agent_id, candidate_ids=candidate_ids, limit=20)
     if not candidates:
         logger.info("No selected property candidates to fetch")
         return
@@ -289,9 +293,25 @@ async def publish_one_property(
     if prop_row["status"] == "published":
         return {"error": "房产已发布"}
 
+    # 城市映射：优先使用经纪所在城市，找不到再回退到物业城市
     city_slug = prop_row["city_slug"]
-    city_eng_name = CITIES.get(city_slug, {}).get("eng_name", city_slug)
-    city_id = publisher.get_city_id(city_eng_name)
+    agent_id = prop_row.get("agent_id")
+    city_id = None
+    city_eng_name = None
+
+    if agent_id:
+        agent_row = await db.get_agent(agent_id)
+        if agent_row:
+            agent_cities = json.loads(agent_row.get("city_slugs") or "[]")
+            if agent_cities:
+                first_agent_city = agent_cities[0]
+                city_eng_name = CITIES.get(first_agent_city, {}).get("eng_name", first_agent_city)
+                city_id = publisher.get_city_id(city_eng_name)
+
+    if not city_id:
+        city_eng_name = CITIES.get(city_slug, {}).get("eng_name", city_slug)
+        city_id = publisher.get_city_id(city_eng_name)
+
     if not city_id:
         return {"error": f"平台未找到城市映射: {city_eng_name}"}
 
@@ -338,7 +358,13 @@ async def publish_one_property(
         raw_data=raw_data,
     )
 
-    result = await publisher.publish_property(prop, city_id)
+    # 根据房产类型选择发布渠道：商业发资讯，住宅发售房
+    is_commercial = prop.property_type in COMMERCIAL_PROPERTY_TYPES
+    if is_commercial:
+        result = await publisher.publish_article(prop, city_id)
+    else:
+        result = await publisher.publish_property(prop, city_id)
+
     errcode = result.get("errcode", -1)
     if errcode == 0 or errcode in (101, 201):
         platform_id = result.get("data", {}).get("id") if isinstance(result.get("data"), dict) else None

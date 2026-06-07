@@ -522,7 +522,7 @@ class AIEngine:
 
 # ── 房产翻译/润色 Prompt ──
 
-PROPERTY_PROMPT = """你是一位专业的加拿大房产文案翻译和润色专家。你的任务是将英文房源信息翻译为地道的中文，生成精炼的房产介绍，适合华人买家快速浏览。
+RESIDENTIAL_PROPERTY_PROMPT = """你是一位专业的加拿大房产文案翻译和润色专家。你的任务是将英文房源信息翻译为地道的中文，生成一段流畅的房产介绍，适合华人买家阅读。
 
 ## 输入数据
 
@@ -546,34 +546,29 @@ PROPERTY_PROMPT = """你是一位专业的加拿大房产文案翻译和润色�
 
 1. **title_zh**：简洁有力的中文标题，包含城市名、社区名、房型、卧室/浴室数
 2. **description_zh**：200字以内的中文摘要，突出房源核心卖点（用于列表页展示）
-3. **content_zh**：精炼的房源要点描述，用"·"符号分隔，每段聚焦一个维度。不要长篇大论，只提取最重要的信息。优先从 `raw_data` 和 `description_en` 中提取卖点。
+3. **content_zh**：一段流畅的中文房源介绍（500-1000字），信息自然融入叙述中。请包含以下信息：
+   - 位置与社区环境
+   - 价格
+   - 室内面积（sqft，可标注近似平方米 1 sqft ≈ 0.093 m²）
+   - 建造年份（如有）
+   - 卧室/卫浴数量
+   - 年度地税（如有）
+   - 主要卖点和亮点
+   - 适合人群
+
+   写作原则：
+   - **只陈述原始数据中提供的事实**，不添加推测或假设
+   - **禁止夸大用语**：不使用"稀缺"、"绝版"、"升值潜力巨大"、"错过不再有"等营销词汇
+   - **禁止市场预测**：不推测房价走势、租金涨幅等
+   - **不要提及 MLS 编号**
+   - **不要提及挂牌时间或上市天数**
+   - 语气亲切自然、信息完整、重点突出，像一位诚实的房产经纪在向客户介绍房源
+   - 写成一段或多段流畅的叙述文字，不要分块罗列或使用 bullet list
+
 4. **highlights**：5-8个核心亮点短语（中文），每个短语简短有力
-5. **year_built**：优先从 `raw_data.summary.built_in` 提取建造年份（如"1988"），如果不存在则从描述中提取，仍未找到则留空字符串
+5. **year_built**：优先从 `raw_data.summary.built_in` 提取建造年份，如果不存在则从描述中提取，仍未找到则留空字符串
 6. 地址、人名、机构名、MLS号码保持英文原文，不要翻译
-7. 面积单位保持原文（sqft），可在括号内标注近似平方米（1 sqft ≈ 0.093 m²）
-
-## content_zh 写作要求
-
-这是给用户在手机端阅读的房源详情，必须精炼、结构化、信息密度高。
-
-格式示例：
-· 黄金地段：位于XXX社区，紧邻XXX公园，步行可达XXX商圈、
-· 卧室与浴室：X间卧室、X间浴室，主卧配有步入式衣帽间、
-· 主层空间：宽敞客厅，橡木厨房配不锈钢电器，餐厅推花园门可至宽大露台、
-· 地下室：明亮家庭房，另设第三间卧室和X件套浴室、
-· 实用配置：中央吸尘、自动喷灌系统，连体车库直通地下室与后院、
-· 户外区域：私密围栏庭院，厨房外有大露台、
-· 社区政策：宠物友好（有限制大部分🉑）、
-· 生活便利：靠近学校、XXX商圈，可快速驶入Circle Drive、
-
-写作原则：
-- 每段以"·"开头，段内用"、"分隔并列信息
-- 段末以"、"结尾（与下一段形成连续列表感）
-- 结构化数据（价格、卧室数、面积等）已在输入中提供，content_zh 不需要重复罗列，只从 description_en 中提取和总结**额外卖点**
-- 如果 description_en 为空或信息极少，content_zh 可以简短（3-5个要点即可）
-- 面向加拿大华人社区，语气亲切自然
-- 禁止使用"该房源"、"本文"等生硬表达
-- 不要加"总结"、"结语"等段落
+7. 面积单位保持原文（sqft），可在括号内标注近似平方米
 
 ## 输出格式
 
@@ -581,7 +576,7 @@ PROPERTY_PROMPT = """你是一位专业的加拿大房产文案翻译和润色�
 {{
     "title_zh": "中文标题",
     "description_zh": "中文摘要（200字以内）",
-    "content_zh": "· 要点1：具体内容、\n· 要点2：具体内容、\n· 要点3：具体内容、",
+    "content_zh": "一段流畅的中文房源介绍...",
     "highlights": ["亮点1", "亮点2", "亮点3"],
     "year_built": "1988",
     "suitable": true/false,
@@ -596,6 +591,84 @@ PROPERTY_PROMPT = """你是一位专业的加拿大房产文案翻译和润色�
 - 地址或房源信息存在明显矛盾
 """
 
+COMMERCIAL_PROPERTY_PROMPT = """你是一位加拿大商业地产信息编辑。你的任务是将英文商业房产信息翻译为客观、准确的中文介绍，帮助华人读者了解物业的基本情况。
+
+## 输入数据
+
+城市: {city}
+
+商业房产信息:
+{listing_json}
+
+## raw_data 字段说明
+
+`raw_data` 是从 Realtor.ca 详情页提取的完整结构化数据，包含以下区块：
+- `summary`: Property Summary（房产类型、楼层、面积、社区、建造年份、地税等）
+- `building`: Building（浴室数、电器、地下室类型、建筑风格、供暖方式等）
+- `measurements`: Measurements（详细尺寸）
+- `rooms`: Rooms（房间列表，含楼层、类型、尺寸）
+- `land`: Land（地块特征、围栏、临街面等）
+
+请优先从 `raw_data` 各区块中提取信息，生成更准确、更丰富的中文内容。如果 `raw_data` 为空，则仅使用基础字段。
+
+## 任务
+
+1. **title_zh**：中文标题，包含城市名、房产类型和核心特点，客观陈述，不使用夸大词汇
+2. **description_zh**：150字以内的摘要，概括物业的基本情况和主要特点
+3. **content_zh**：一段客观的中文物业介绍（500-1000字），信息自然融入叙述中。请包含以下内容：
+   - 位置与交通情况
+   - 价格
+   - 建筑面积与占地面积（sqft，可标注近似平方米 1 sqft ≈ 0.093 m²）
+   - 建造年份（如有）
+   - 物业类型与用途
+   - 主要设施与设备配置
+   - 现有租赁情况（如有，仅陈述原文信息，不做推测）
+   - 年度地税与运营成本（如有）
+   - 经纪联系方式
+
+   写作原则：
+   - **只陈述原始数据中提供的事实**，不添加任何推测、预估或假设
+   - **禁止编造数据**：如入住率、资本化率、投资回报率、砍价空间、未来收益等，除非原始信息中明确提到
+   - **禁止夸大用语**：不使用"黄金标的"、"稀缺机会"、"稳定现金流"、"投资良机"、"躺着赚钱"等营销词汇
+   - **禁止市场预测**：不推测房价走势、租金涨幅、区域发展潜力等
+   - **不要提及 MLS 编号**
+   - **不要提及挂牌时间或上市天数**
+   - 语气客观平实，像一份尽职调查报告的摘要，而非推销文案
+   - 写成一段或多段流畅的文字，不要分块罗列
+
+4. **highlights**：5-8个核心特点短语（中文），每个短语简短有力，只陈述事实。例如"24间客房汽车旅馆"、"1980年建造"、"屋顶与窗户已更新"、"附带业主生活区"等
+5. **year_built**：优先从 `raw_data.summary.built_in` 提取建造年份，如果不存在则从描述中提取，仍未找到则留空字符串
+6. 地址、人名、机构名、MLS号码保持英文原文，不要翻译
+7. 面积单位保持原文（sqft），可在括号内标注近似平方米
+
+## 输出格式
+
+请严格按以下 JSON 格式输出，只输出 JSON，不要有其他内容:
+{{
+    "title_zh": "中文标题",
+    "description_zh": "中文摘要（150字以内）",
+    "content_zh": "一段客观的中文物业介绍...",
+    "highlights": ["亮点1", "亮点2", "亮点3"],
+    "year_built": "1988",
+    "suitable": true/false,
+    "suitable_reason": "如果不适合，说明原因；如果适合，写'信息完整，描述积极'"
+}}
+
+## 质量评估标准
+
+请从**内容质量**角度判断是否适合发布，标记 suitable=false 的情况：
+- 房源描述质量极差（如全是乱码、无意义重复、或明显虚假信息）
+- 正文内容过于空洞，无法让买家了解房源实际状况
+- 地址或房源信息存在明显矛盾
+- 正文包含明显的夸大或推测性内容（如编造投资回报数据）
+"""
+
+COMMERCIAL_PROPERTY_TYPES = [
+    "Commercial", "Business", "Retail", "Hospitality", "Industrial",
+    "Office", "Mixed Use", "Mixed", "Shopping Center", "Plaza",
+    "Strip Mall", "Warehouse", "Storefront",
+]
+
 
 # ── 房产处理方法 ──
 
@@ -607,10 +680,9 @@ async def process_property(
 ) -> Property | None:
     """调用 LLM 翻译/润色房源信息，返回 Property 对象"""
 
-    # 构建 LLM 输入
+    # 构建 LLM 输入（MLS 编号不传入，避免出现在 content_zh 中）
     city_name = CITIES.get(candidate.city_slug, {}).get("eng_name", candidate.city_slug.title())
     listing_input = {
-        "mls_number": candidate.mls_number,
         "price": candidate.price,
         "price_numeric": candidate.price_numeric,
         "address": candidate.address,
@@ -626,13 +698,17 @@ async def process_property(
         "raw_data": candidate.raw_data or {},
     }
 
+    # 根据房产类型选择 prompt：商业房产用投资分析风格，住宅用房源介绍风格
+    is_commercial = candidate.property_type in COMMERCIAL_PROPERTY_TYPES
+    prompt_template = COMMERCIAL_PROPERTY_PROMPT if is_commercial else RESIDENTIAL_PROPERTY_PROMPT
+
     async with ai_engine._lock:
         response = await ai_engine.client.messages.create(
             model=ai_engine.model,
             max_tokens=ai_engine.max_tokens,
             messages=[{
                 "role": "user",
-                "content": PROPERTY_PROMPT.format(
+                "content": prompt_template.format(
                     city=city_name,
                     listing_json=json.dumps(listing_input, ensure_ascii=False, indent=2),
                 ),

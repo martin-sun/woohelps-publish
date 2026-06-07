@@ -867,12 +867,14 @@ class Database:
                 json.dumps(raw_data, ensure_ascii=False) if raw_data else None, candidate_id,
             )
 
-    async def get_property_candidates_to_fetch(self, agent_id: int | None = None, limit: int = 20) -> list[dict]:
+    async def get_property_candidates_to_fetch(self, agent_id: int | None = None, candidate_ids: list[int] | None = None, limit: int = 20) -> list[dict]:
         conditions = ["human_status = 'selected'", "fetched_detail = FALSE"]
         args: list = []
         n = 0
         if agent_id:
             n += 1; conditions.append(f"agent_id = ${n}"); args.append(agent_id)
+        if candidate_ids:
+            n += 1; conditions.append(f"id = ANY(${n}::int[])"); args.append(candidate_ids)
         where = f"WHERE {' AND '.join(conditions)}"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -956,11 +958,18 @@ class Database:
                 return existing["id"]
             return None
 
+    COMMERCIAL_PROPERTY_TYPES = [
+        "Commercial", "Business", "Retail", "Hospitality", "Industrial",
+        "Office", "Mixed Use", "Mixed", "Shopping Center", "Plaza",
+        "Strip Mall", "Warehouse", "Storefront",
+    ]
+
     async def list_properties(
         self,
         city_slug: str | None = None,
         status: str | None = None,
         agent_id: int | None = None,
+        category: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict]:
@@ -971,6 +980,10 @@ class Database:
             n += 1; conditions.append(f"status = ${n}"); args.append(status)
         if agent_id:
             n += 1; conditions.append(f"agent_id = ${n}"); args.append(agent_id)
+        if category == "commercial":
+            n += 1; conditions.append(f"property_type = ANY(${n}::text[])"); args.append(self.COMMERCIAL_PROPERTY_TYPES)
+        elif category == "residential":
+            n += 1; conditions.append(f"property_type IS NOT NULL AND property_type <> ALL(${n}::text[])"); args.append(self.COMMERCIAL_PROPERTY_TYPES)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         n += 1; limit_n = n
         n += 1; offset_n = n
@@ -987,6 +1000,7 @@ class Database:
         city_slug: str | None = None,
         status: str | None = None,
         agent_id: int | None = None,
+        category: str | None = None,
     ) -> int:
         conditions, args, n = [], [], 0
         if city_slug:
@@ -995,6 +1009,10 @@ class Database:
             n += 1; conditions.append(f"status = ${n}"); args.append(status)
         if agent_id:
             n += 1; conditions.append(f"agent_id = ${n}"); args.append(agent_id)
+        if category == "commercial":
+            n += 1; conditions.append(f"property_type = ANY(${n}::text[])"); args.append(self.COMMERCIAL_PROPERTY_TYPES)
+        elif category == "residential":
+            n += 1; conditions.append(f"property_type IS NOT NULL AND property_type <> ALL(${n}::text[])"); args.append(self.COMMERCIAL_PROPERTY_TYPES)
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
