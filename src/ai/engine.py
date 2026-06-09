@@ -585,7 +585,6 @@ RESIDENTIAL_PROPERTY_PROMPT = """你是一位专业的加拿大房产文案翻�
    - **只陈述原始数据中提供的事实**，不添加推测或假设
    - **禁止夸大用语**：不使用"稀缺"、"绝版"、"升值潜力巨大"、"错过不再有"等营销词汇
    - **禁止市场预测**：不推测房价走势、租金涨幅等
-   - **不要提及 MLS 编号**
    - **不要提及挂牌时间或上市天数**
    - 如果某项信息缺失，直接省略对应内容，不要写"未知"或"暂无"
    - 语气亲切自然、信息完整、重点突出
@@ -682,7 +681,6 @@ COMMERCIAL_PROPERTY_PROMPT = """你是一位加拿大商业地产信息编辑。
    - **禁止编造数据**：如入住率、资本化率、投资回报率、砍价空间、未来收益等，除非原始信息中明确提到
    - **禁止夸大用语**：不使用"黄金标的"、"稀缺机会"、"稳定现金流"、"投资良机"、"躺着赚钱"等营销词汇
    - **禁止市场预测**：不推测房价走势、租金涨幅、区域发展潜力等
-   - **不要提及 MLS 编号**
    - **不要提及挂牌时间或上市天数**
    - 如果某项信息缺失，直接省略对应内容，不要写"未知"或"暂无"
    - 语气客观平实，像一份尽职调查报告的摘要
@@ -731,12 +729,13 @@ async def process_property(
 ) -> Property | None:
     """调用 LLM 翻译/润色房源信息，返回 Property 对象"""
 
-    # 构建 LLM 输入（MLS 编号不传入，避免出现在 content_zh 中）
+    # 构建 LLM 输入
     city_name = CITIES.get(candidate.city_slug, {}).get("eng_name", candidate.city_slug.title())
     listing_input = {
         "price": candidate.price,
         "price_numeric": candidate.price_numeric,
         "address": candidate.address,
+        "mls_number": candidate.mls_number,
         "property_type": candidate.property_type,
         "bedrooms": candidate.bedrooms,
         "bathrooms": candidate.bathrooms,

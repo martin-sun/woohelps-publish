@@ -288,6 +288,7 @@ class WoohelpsPublisher:
             "imgs": json.dumps(all_source_urls),
             "tags": json.dumps(tags),
             "phone": prop.agent_phone or "",
+            "mls_number": prop.mls_number or "",
         }
         headers = {"LOGIN-SESSION": self.login_session}
 
