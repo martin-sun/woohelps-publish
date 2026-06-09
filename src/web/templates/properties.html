@@ -54,6 +54,10 @@
     <table class="w-full text-sm">
         <thead class="bg-gray-50 border-b">
             <tr>
+                <th class="px-3 py-3 w-8">
+                    <input type="checkbox" id="select-all" onchange="toggleAll(this)"
+                           class="rounded border-gray-300">
+                </th>
                 <th class="px-4 py-3 text-left font-medium text-gray-600">ID</th>
                 <th class="px-4 py-3 text-left font-medium text-gray-600">标题</th>
                 <th class="px-4 py-3 text-left font-medium text-gray-600">价格</th>
@@ -66,6 +70,10 @@
         <tbody>
             {% for p in properties %}
             <tr class="border-b hover:bg-gray-50">
+                <td class="px-3 py-3">
+                    <input type="checkbox" value="{{ p.id }}"
+                           class="prop-cb rounded border-gray-300">
+                </td>
                 <td class="px-4 py-3">{{ p.id }}</td>
                 <td class="px-4 py-3">
                     <a href="/property/{{ p.id }}" class="text-blue-600 hover:underline font-medium">{{ p.title_zh }}</a>
@@ -98,21 +106,72 @@
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="7" class="px-4 py-8 text-center text-gray-500">暂无房源</td></tr>
+            <tr><td colspan="8" class="px-4 py-8 text-center text-gray-500">暂无房源</td></tr>
             {% endfor %}
         </tbody>
     </table>
 </div>
 
-<!-- 分页 -->
-{% if total_pages > 1 %}
-<div class="flex justify-center gap-2 mt-4">
-    {% for p in range(1, total_pages + 1) %}
-    <a href="?city={{ current_city }}&status={{ current_status }}&agent={{ current_agent }}&page={{ p }}"
-       class="px-3 py-1 rounded text-sm {% if p == current_page %}bg-blue-600 text-white{% else %}bg-white border text-gray-700 hover:bg-gray-50{% endif %}">
-        {{ p }}
-    </a>
-    {% endfor %}
+<!-- 批量操作 + 分页 -->
+<div class="flex items-center justify-between mt-3 px-1">
+    <div class="flex items-center gap-3">
+        <span id="selected-count" class="text-sm text-gray-500">已选 0 个</span>
+        <button onclick="propBatchAction('/properties/publish')" id="publish-btn" disabled
+                class="bg-green-600 text-white px-3 py-1.5 rounded text-sm hover:bg-green-700 disabled:opacity-50">
+            批量发布选中
+        </button>
+    </div>
+    {% if total_pages > 1 %}
+    <div class="flex gap-2">
+        {% for p in range(1, total_pages + 1) %}
+        <a href="?city={{ current_city }}&status={{ current_status }}&agent={{ current_agent }}&page={{ p }}"
+           class="px-3 py-1 rounded text-sm {% if p == current_page %}bg-blue-600 text-white{% else %}bg-white border text-gray-700 hover:bg-gray-50{% endif %}">
+            {{ p }}
+        </a>
+        {% endfor %}
+    </div>
+    {% endif %}
 </div>
-{% endif %}
+
+<script>
+function toggleAll(el) {
+    document.querySelectorAll('.prop-cb').forEach(cb => cb.checked = el.checked);
+    updatePropCount();
+}
+function getCheckedPropIds() {
+    return Array.from(document.querySelectorAll('.prop-cb:checked')).map(cb => cb.value);
+}
+function updatePropCount() {
+    const n = getCheckedPropIds().length;
+    document.getElementById('selected-count').textContent = '已选 ' + n + ' 个';
+    document.getElementById('publish-btn').disabled = n === 0;
+}
+function propBatchAction(url) {
+    const ids = getCheckedPropIds();
+    if (!ids.length) return;
+    const form = document.createElement('form');
+    form.method = 'post';
+    form.action = url;
+    ids.forEach(id => {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'property_ids';
+        input.value = id;
+        form.appendChild(input);
+    });
+    const csrf = document.cookie.split('; ').find(c => c.startsWith('csrf_token='));
+    if (csrf) {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'csrf_token';
+        input.value = csrf.split('=').slice(1).join('=');
+        form.appendChild(input);
+    }
+    document.body.appendChild(form);
+    form.submit();
+}
+document.addEventListener('change', function(e) {
+    if (e.target.classList.contains('prop-cb')) updatePropCount();
+});
+</script>
 {% endblock %}

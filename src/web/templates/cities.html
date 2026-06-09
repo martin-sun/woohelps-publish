@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}城市爬虫 - 加拿大活动管理{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+    <h1 class="text-xl font-bold text-gray-800">热门城市</h1>
+</div>
+
+<!-- 全局设置 -->
+<div class="bg-white rounded-lg border p-4 mb-6">
+    <div class="flex flex-wrap gap-4 items-end">
+        <div>
+            <label class="block text-xs text-gray-500 mb-1">默认爬取时间段（最近天数）</label>
+            <input type="number" id="global-days" value="1" min="1" max="30"
+                   class="border rounded px-3 py-1.5 text-sm w-24"
+                   onchange="document.querySelectorAll('.city-days').forEach(el => el.value = this.value)">
+        </div>
+        <div class="text-sm text-gray-500">
+            设置后点击下方任意城市的「爬取」按钮，即可按该时间段搜索该城市的最新上架房源。
+        </div>
+    </div>
+</div>
+
+<!-- 城市卡片网格 -->
+<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+    {% for slug, info in cities.items() %}
+    <div class="bg-white rounded-lg border p-4 hover:shadow-md transition-shadow">
+        <div class="flex items-center justify-between mb-3">
+            <h3 class="font-semibold text-gray-800">{{ info.eng_name }}</h3>
+            {% if slug in running_cities %}
+            <span class="text-xs bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">爬取中</span>
+            {% endif %}
+        </div>
+        <div class="space-y-1 text-xs text-gray-500 mb-4">
+            <div>坐标: {{ info.lat }}, {{ info.lng }}</div>
+            <div>搜索半径: {{ info.radius }}</div>
+            <div>候选房源: {{ candidate_counts.get(slug, 0) }}</div>
+        </div>
+        <form method="post" action="/properties/city-scrape" class="flex gap-2">
+            <input type="hidden" name="city_slug" value="{{ slug }}">
+            <input type="number" name="days" value="1" min="1" max="30"
+                   class="city-days border rounded px-2 py-1 text-sm w-16">
+            <button type="submit"
+                    class="flex-1 bg-purple-600 text-white px-3 py-1.5 rounded text-sm hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    {% if slug in running_cities %}disabled{% endif %}>
+                {% if slug in running_cities %}爬取中…{% else %}爬取{% endif %}
+            </button>
+        </form>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

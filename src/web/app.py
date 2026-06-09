@@ -31,6 +31,7 @@ from src.services import (
 )
 from src.services_property import (
     scrape_agent,
+    scrape_city,
     fetch_property_details,
     fetch_single_property,
     process_property_candidates,
@@ -109,7 +110,9 @@ async def _fetch_worker():
                 await db.complete_scrape_task(task_id)
             else:
                 await fetch_property_details(
-                    item.get("agent_id"), db, ai_engine, candidate_ids=item.get("candidate_ids")
+                    item.get("agent_id"), db, ai_engine,
+                    candidate_ids=item.get("candidate_ids"),
+                    city_slug=item.get("city_slug"),
                 )
                 await db.complete_scrape_task(task_id)
         except Exception as e:
@@ -581,6 +584,23 @@ async def candidates_refilter(request: Request):
     return RedirectResponse(url=referer, status_code=303)
 
 
+# --- City routes ---
+
+@app.get("/cities")
+async def cities_page(request: Request):
+    db = _get_db()
+    candidate_counts = {}
+    for slug in CITIES:
+        candidate_counts[slug] = await db.count_property_candidates(
+            agent_id=None, city_slug=slug
+        )
+    return templates.TemplateResponse(request, "cities.html", {
+        "cities": CITIES,
+        "candidate_counts": candidate_counts,
+        "running_cities": _city_scrape_running,
+    })
+
+
 # --- Agent routes ---
 
 @app.get("/agents")
@@ -589,6 +609,7 @@ async def agents_page(request: Request):
     agents = await db.list_agents()
     return templates.TemplateResponse(request, "agents.html", {
         "agents": agents,
+        "cities": CITIES,
     })
 
 
@@ -688,6 +709,43 @@ async def agents_scrape(agent_id: int, request: Request):
     return RedirectResponse(url="/tasks", status_code=303)
 
 
+# --- City scrape ---
+_city_scrape_guard = asyncio.Lock()
+_city_scrape_running: set[str] = set()
+
+
+@app.post("/properties/city-scrape")
+async def properties_city_scrape(request: Request):
+    db = _get_db()
+    form = await get_form(request)
+    city_slug = form.get("city_slug", "").strip()
+    try:
+        days = int(form.get("days", "1") or "1")
+    except ValueError:
+        return HTMLResponse("天数必须是数字", status_code=400)
+
+    if not city_slug or city_slug not in CITIES:
+        return HTMLResponse(f"无效城市: {city_slug}", status_code=400)
+    if days < 1 or days > 30:
+        return HTMLResponse("天数必须在 1-30 之间", status_code=400)
+
+    async with _city_scrape_guard:
+        if city_slug in _city_scrape_running:
+            return HTMLResponse(f"{city_slug} 的城市抓取任务正在运行，请等待完成", status_code=409)
+        _city_scrape_running.add(city_slug)
+
+    async def _run():
+        try:
+            await scrape_city(city_slug, days, db)
+        except Exception as e:
+            logger.error(f"Scrape city {city_slug} failed: {e}")
+        finally:
+            _city_scrape_running.discard(city_slug)
+
+    asyncio.create_task(_run())
+    return RedirectResponse(url="/tasks", status_code=303)
+
+
 @app.post("/agents/{agent_id}/delete")
 async def agents_delete(agent_id: int, request: Request):
     db = _get_db()
@@ -725,14 +783,15 @@ async def properties_page(request: Request, city: str = "", status: str = "", ag
 
 
 @app.get("/properties/candidates")
-async def property_candidates_page(request: Request, agent: str = "", status: str = "", page: int = 1):
+async def property_candidates_page(request: Request, agent: str = "", city: str = "", status: str = "", page: int = 1):
     db = _get_db()
     agent_id = int(agent) if agent else None
+    city_slug = city or None
     status_filter = status or None
     limit = 50
     offset = (page - 1) * limit
-    candidates = await db.list_property_candidates(agent_id, None, status_filter, limit, offset)
-    total = await db.count_property_candidates(agent_id, None, status_filter)
+    candidates = await db.list_property_candidates(agent_id, None, status_filter, city_slug, limit, offset)
+    total = await db.count_property_candidates(agent_id, None, status_filter, city_slug)
     total_pages = max(1, (total + limit - 1) // limit)
     agents = await db.list_agents(is_active=True)
     return templates.TemplateResponse(request, "property_candidates.html", {
@@ -741,8 +800,10 @@ async def property_candidates_page(request: Request, agent: str = "", status: st
         "total_pages": total_pages,
         "current_page": page,
         "current_agent": agent,
+        "current_city": city,
         "current_status": status,
         "agents": agents,
+        "cities": CITIES,
     })
 
 
@@ -773,10 +834,13 @@ async def property_candidates_fetch(request: Request):
     db = _get_db()
     form = await get_form(request)
     agent_id = int(form.get("agent_id") or 0) or None
+    city_slug = form.get("city", "").strip() or None
     candidate_ids_raw = form.getlist("candidate_ids")
     candidate_ids = [int(x) for x in candidate_ids_raw] if candidate_ids_raw else None
 
     task_detail = f"agent_id={agent_id}"
+    if city_slug:
+        task_detail += f", city={city_slug}"
     if candidate_ids:
         task_detail += f", candidate_ids={candidate_ids}"
     task_id = await db.create_task("fetch_and_process_property", detail=task_detail)
@@ -784,6 +848,7 @@ async def property_candidates_fetch(request: Request):
     await _fetch_queue.put({
         "task_id": task_id,
         "agent_id": agent_id,
+        "city_slug": city_slug,
         "candidate_ids": candidate_ids,
     })
     return RedirectResponse(url="/tasks", status_code=303)
@@ -825,6 +890,39 @@ async def property_detail_page(request: Request, property_id: int):
         prop["raw_data"] = {}
 
     return templates.TemplateResponse(request, "property_detail.html", {"property": prop})
+
+
+@app.post("/properties/publish")
+async def properties_publish(request: Request):
+    db = _get_db()
+    publisher = _get_publisher()
+    form = await get_form(request)
+    property_ids = [int(x) for x in form.getlist("property_ids")]
+    if not property_ids:
+        return RedirectResponse(url="/properties", status_code=303)
+
+    properties = await db.get_properties_by_ids(property_ids)
+    for prop in properties:
+        if prop["status"] == "published":
+            continue
+        task_id = await db.create_task(
+            "publish_property",
+            detail=prop["title_zh"][:60] if prop.get("title_zh") else str(prop["id"]),
+        )
+
+        async def _run(prop=prop, task_id=task_id):
+            try:
+                result = await publish_one_property(prop["id"], db, publisher)
+                if result.get("success"):
+                    await db.complete_scrape_task(task_id)
+                else:
+                    await db.fail_scrape_task(task_id, result.get("error", "unknown"))
+            except Exception as e:
+                await db.fail_scrape_task(task_id, str(e))
+
+        asyncio.create_task(_run())
+
+    return RedirectResponse(url="/tasks", status_code=303)
 
 
 @app.post("/properties/{property_id}/publish")

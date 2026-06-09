@@ -14,6 +14,10 @@ class Database:
         self.database_url = database_url
         self._pool: asyncpg.Pool | None = None
 
+    @staticmethod
+    async def _check_connection(conn):
+        await conn.execute("SELECT 1")
+
     async def init(self):
         ssl_ctx = ssl.create_default_context()
         ssl_ctx.check_hostname = False
@@ -21,6 +25,7 @@ class Database:
         self._pool = await asyncpg.create_pool(
             self.database_url, min_size=2, max_size=10,
             statement_cache_size=0, ssl=ssl_ctx,
+            command_timeout=30, setup=self._check_connection,
         )
 
     async def close(self):
@@ -744,6 +749,65 @@ class Database:
 
         return inserted, updated, price_changed
 
+    async def upsert_city_property_candidates(self, candidates: list[PropertyCandidate]) -> tuple[int, int]:
+        """批量 upsert 城市爬虫候选房源（agent_id=NULL），返回 (新增数, 更新数)。
+
+        使用 partial unique index (source, source_id) WHERE agent_id IS NULL
+        配合 ON CONFLICT 实现原子 upsert，避免并发重复插入。
+        """
+        if not candidates:
+            return 0, 0
+
+        inserted = updated = 0
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                for c in candidates:
+                    row = await conn.fetchrow(
+                        """INSERT INTO property_candidates (
+                            city_slug, agent_id, source, source_id, source_url, mls_number,
+                            title, price, price_numeric, property_type, bedrooms, bathrooms,
+                            address, postal_code, latitude, longitude,
+                            photo_urls, open_house, description_en, raw_data,
+                            listing_status, last_seen_at, miss_count,
+                            human_status, fetched_detail, property_id
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW(), 0, $22, $23, $24)
+                        ON CONFLICT (source, source_id) WHERE agent_id IS NULL
+                        DO UPDATE SET
+                            city_slug = EXCLUDED.city_slug,
+                            title = EXCLUDED.title,
+                            price = EXCLUDED.price,
+                            price_numeric = EXCLUDED.price_numeric,
+                            property_type = EXCLUDED.property_type,
+                            bedrooms = EXCLUDED.bedrooms,
+                            bathrooms = EXCLUDED.bathrooms,
+                            address = EXCLUDED.address,
+                            postal_code = EXCLUDED.postal_code,
+                            latitude = EXCLUDED.latitude,
+                            longitude = EXCLUDED.longitude,
+                            photo_urls = EXCLUDED.photo_urls,
+                            open_house = EXCLUDED.open_house,
+                            raw_data = EXCLUDED.raw_data,
+                            last_seen_at = NOW(),
+                            updated_at = NOW()
+                        RETURNING xmax::text::int = 0 AS is_insert
+                        """,
+                        c.city_slug, c.agent_id, c.source, c.source_id, c.source_url, c.mls_number,
+                        c.title, c.price, c.price_numeric, c.property_type, c.bedrooms, c.bathrooms,
+                        c.address, c.postal_code, c.latitude, c.longitude,
+                        json.dumps(c.photo_urls, ensure_ascii=False),
+                        json.dumps(c.open_house, ensure_ascii=False),
+                        c.description_en,
+                        json.dumps(c.raw_data, ensure_ascii=False) if c.raw_data else None,
+                        c.listing_status, c.human_status, c.fetched_detail, c.property_id,
+                    )
+
+                    if row["is_insert"]:
+                        inserted += 1
+                    else:
+                        updated += 1
+
+        return inserted, updated
+
     async def incremental_update_candidates(self, agent_id: int, current_ids: list[str]) -> int:
         """增量更新：标记下架房源。返回标记为 delisted 的数量。"""
         async with self._pool.acquire() as conn:
@@ -773,12 +837,15 @@ class Database:
         agent_id: int | None = None,
         listing_status: str | None = None,
         human_status: str | None = None,
+        city_slug: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict]:
         conditions, args, n = [], [], 0
         if agent_id:
             n += 1; conditions.append(f"agent_id = ${n}"); args.append(agent_id)
+        if city_slug:
+            n += 1; conditions.append(f"city_slug = ${n}"); args.append(city_slug)
         if listing_status:
             n += 1; conditions.append(f"listing_status = ${n}"); args.append(listing_status)
         if human_status:
@@ -799,10 +866,13 @@ class Database:
         agent_id: int | None = None,
         listing_status: str | None = None,
         human_status: str | None = None,
+        city_slug: str | None = None,
     ) -> int:
         conditions, args, n = [], [], 0
         if agent_id:
             n += 1; conditions.append(f"agent_id = ${n}"); args.append(agent_id)
+        if city_slug:
+            n += 1; conditions.append(f"city_slug = ${n}"); args.append(city_slug)
         if listing_status:
             n += 1; conditions.append(f"listing_status = ${n}"); args.append(listing_status)
         if human_status:
@@ -867,12 +937,14 @@ class Database:
                 json.dumps(raw_data, ensure_ascii=False) if raw_data else None, candidate_id,
             )
 
-    async def get_property_candidates_to_fetch(self, agent_id: int | None = None, candidate_ids: list[int] | None = None, limit: int = 20) -> list[dict]:
+    async def get_property_candidates_to_fetch(self, agent_id: int | None = None, candidate_ids: list[int] | None = None, city_slug: str | None = None, limit: int = 20) -> list[dict]:
         conditions = ["human_status = 'selected'", "fetched_detail = FALSE"]
         args: list = []
         n = 0
         if agent_id:
             n += 1; conditions.append(f"agent_id = ${n}"); args.append(agent_id)
+        if city_slug:
+            n += 1; conditions.append(f"city_slug = ${n}"); args.append(city_slug)
         if candidate_ids:
             n += 1; conditions.append(f"id = ANY(${n}::int[])"); args.append(candidate_ids)
         where = f"WHERE {' AND '.join(conditions)}"
@@ -1047,6 +1119,15 @@ class Database:
                 source, source_id,
             )
             return dict(row) if row else None
+
+    async def get_properties_by_ids(self, ids: list[int]) -> list[dict]:
+        if not ids:
+            return []
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM properties WHERE id = ANY($1::int[])", ids,
+            )
+            return [dict(r) for r in rows]
 
     async def update_property_status(self, property_id: int, status: str) -> None:
         async with self._pool.acquire() as conn:

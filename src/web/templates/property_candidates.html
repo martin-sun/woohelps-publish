@@ -17,6 +17,15 @@
             </select>
         </div>
         <div>
+            <label class="block text-xs text-gray-500 mb-1">城市</label>
+            <select name="city" class="border rounded px-3 py-1.5 text-sm">
+                <option value="">全部</option>
+                {% for slug, info in cities.items() %}
+                <option value="{{ slug }}" {% if current_city == slug %}selected{% endif %}>{{ info.eng_name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div>
             <label class="block text-xs text-gray-500 mb-1">状态</label>
             <select name="status" class="border rounded px-3 py-1.5 text-sm">
                 <option value="">全部</option>
@@ -38,6 +47,7 @@
 <!-- 候选列表 -->
 <form id="batch-form" method="post">
     <input type="hidden" name="agent_id" value="{{ current_agent }}">
+    <input type="hidden" name="city" value="{{ current_city }}">
 </form>
 <div class="bg-white rounded-lg border">
     <table class="w-full text-sm">
@@ -96,7 +106,7 @@
 {% if total_pages > 1 %}
 <div class="flex justify-center gap-2 mt-4">
     {% for p in range(1, total_pages + 1) %}
-    <a href="?agent={{ current_agent }}&status={{ current_status }}&page={{ p }}"
+    <a href="?agent={{ current_agent }}&city={{ current_city }}&status={{ current_status }}&page={{ p }}"
        class="px-3 py-1 rounded text-sm {% if p == current_page %}bg-blue-600 text-white{% else %}bg-white border text-gray-700 hover:bg-gray-50{% endif %}">
         {{ p }}
     </a>

@@ -10,7 +10,7 @@ from src.config.settings import CITIES, get_settings
 from src.models.property import PropertyCandidate, Property
 from src.publisher.woohelps import WoohelpsPublisher
 from src.scrapers.browser import launch_browser, new_stealth_context
-from src.scrapers.realtorca import fetch_all_listings, fetch_property_detail_page, parse_city_from_address
+from src.scrapers.realtorca import fetch_all_listings, fetch_city_listings, fetch_property_detail_page, parse_city_from_address
 from src.storage.db import Database
 
 
@@ -108,7 +108,113 @@ async def scrape_agent(agent_row: dict, db: Database) -> dict:
         raise
 
 
-async def fetch_property_details(agent_id: int | None, db: Database, ai_engine: AIEngine, candidate_ids: list[int] | None = None):
+def _agent_info_from_raw_data(raw_data: dict) -> dict | None:
+    """从 API 原始数据 (raw_data['api_individuals']) 中提取经纪信息。
+
+    用于城市爬虫(agent_id=None)的房源，补充经纪名称/公司/电话。
+    """
+    individuals = raw_data.get("api_individuals", [])
+    if not individuals:
+        return None
+    first = individuals[0]
+    name = first.get("Name", "")
+    org = first.get("Organization", {})
+    brokerage = org.get("Name", "")
+    phones = first.get("Phones", [])
+    phone = ""
+    if phones:
+        area = phones[0].get("AreaCode", "")
+        num = phones[0].get("PhoneNumber", "")
+        phone = f"{area}-{num}" if area and num else num or area
+    return {
+        "name": name,
+        "brokerage": brokerage,
+        "phone": phone,
+    }
+
+
+async def scrape_city(city_slug: str, days: int, db: Database) -> dict:
+    """按城市爬取最近 `days` 天上架的房源，存入 property_candidates。
+
+    返回 {"inserted": int, "updated": int}
+    """
+    logger.info(f"Scraping city {city_slug} for last {days} days")
+
+    task_id = await db.create_task(
+        task_type="city_listings",
+        city_slugs=[city_slug],
+        detail=f"city={city_slug}, days={days}",
+    )
+
+    try:
+        listings = await fetch_city_listings(city_slug, days=days, delay=2.5)
+
+        candidates = []
+        for item in listings:
+            address_data = item.get("Property", {}).get("Address", {})
+            address_text = address_data.get("AddressText", "")
+            parsed_city = parse_city_from_address(address_text)
+
+            photos = item.get("Property", {}).get("Photo", [])
+            raw_urls = [p.get("HighResPath") or p.get("LowResPath") for p in photos if p.get("HighResPath") or p.get("LowResPath")]
+            photo_urls = [
+                url if url.startswith("http") else f"https://www.realtor.ca{url}"
+                for url in raw_urls
+            ]
+
+            building = item.get("Building", {}) or {}
+            property_data = item.get("Property", {}) or {}
+
+            # 从 API 保留 Individual 信息到 raw_data，供后续经纪信息提取
+            raw_data = {}
+            individuals = item.get("Individual", [])
+            if individuals:
+                raw_data["api_individuals"] = individuals
+
+            candidate = PropertyCandidate(
+                city_slug=parsed_city,
+                agent_id=None,
+                source="realtorca",
+                source_id=str(item["Id"]),
+                source_url=f"https://www.realtor.ca{item.get('RelativeDetailsURL', '')}",
+                mls_number=item.get("MlsNumber"),
+                title=address_text.split("|")[0] if "|" in address_text else address_text,
+                price=property_data.get("Price"),
+                price_numeric=property_data.get("PriceUnformattedValue"),
+                property_type=property_data.get("Type"),
+                bedrooms=str(building.get("Bedrooms", "")),
+                bathrooms=str(building.get("BathroomTotal", "")),
+                address=address_text,
+                postal_code=item.get("PostalCode", ""),
+                latitude=address_data.get("Latitude"),
+                longitude=address_data.get("Longitude"),
+                photo_urls=photo_urls,
+                open_house=item.get("OpenHouse", []),
+                raw_data=raw_data,
+            )
+            candidates.append(candidate)
+
+        inserted, updated = await db.upsert_city_property_candidates(candidates)
+
+        await db.update_scrape_task(
+            task_id,
+            status="completed",
+            total_fetched=len(listings),
+            total_new=inserted,
+            new_candidates=inserted,
+            updated_candidates=updated,
+        )
+
+        logger.info(f"City {city_slug}: inserted={inserted}, updated={updated}")
+        return {"inserted": inserted, "updated": updated}
+
+    except Exception as e:
+        logger.error(f"Scrape city {city_slug} failed: {e}")
+        await db.fail_scrape_task(task_id, str(e))
+        raise
+
+
+async def fetch_property_details(agent_id: int | None, db: Database, ai_engine: AIEngine, candidate_ids: list[int] | None = None, city_slug: str | None = None):
     """抓取房源详情页描述并立即进行 AI 处理，一步完成。
 
     1. 查询 human_status='selected' 且 fetched_detail=FALSE 的候选
@@ -120,7 +226,7 @@ async def fetch_property_details(agent_id: int | None, db: Database, ai_engine: 
     if candidate_ids:
         await db.update_property_candidate_status(candidate_ids, "selected")
 
-    candidates = await db.get_property_candidates_to_fetch(agent_id, candidate_ids=candidate_ids, limit=20)
+    candidates = await db.get_property_candidates_to_fetch(agent_id, candidate_ids=candidate_ids, city_slug=city_slug, limit=20)
     if not candidates:
         logger.info("No selected property candidates to fetch")
         return
@@ -142,6 +248,17 @@ async def fetch_property_details(agent_id: int | None, db: Database, ai_engine: 
                 description = detail_page.description
                 photo_urls = detail_page.photo_urls
                 raw_data = detail_page.raw_data
+
+                # 合并 raw_data：保留 API 阶段已有的 api_individuals 等信息
+                existing_raw_data = cand.get("raw_data") or {}
+                if isinstance(existing_raw_data, str):
+                    try:
+                        existing_raw_data = json.loads(existing_raw_data) if existing_raw_data else {}
+                    except Exception:
+                        existing_raw_data = {}
+                if existing_raw_data and isinstance(existing_raw_data, dict):
+                    existing_raw_data.update(raw_data)
+                    raw_data = existing_raw_data
 
                 await db.update_candidate_description(cand["id"], description)
                 await db.update_candidate_photos(cand["id"], photo_urls)
@@ -175,7 +292,7 @@ async def fetch_property_details(agent_id: int | None, db: Database, ai_engine: 
 
                 description_en = description or ""
 
-                # 3. 查询经纪信息
+                # 3. 查询经纪信息（优先 agents 表，城市爬虫 fallback 到 api_individuals）
                 agent_row = await db.get_agent(cand["agent_id"]) if cand.get("agent_id") else None
                 agent_info = None
                 if agent_row:
@@ -184,6 +301,8 @@ async def fetch_property_details(agent_id: int | None, db: Database, ai_engine: 
                         "brokerage": agent_row.get("brokerage", ""),
                         "phone": agent_row.get("phone", ""),
                     }
+                elif not cand.get("agent_id"):
+                    agent_info = _agent_info_from_raw_data(raw_data)
 
                 # 4. AI 处理
                 prop = await process_property(ai_engine, candidate, description_en, agent_info=agent_info)
@@ -265,6 +384,14 @@ async def process_property_candidates(
                     "brokerage": agent_row.get("brokerage", ""),
                     "phone": agent_row.get("phone", ""),
                 }
+            elif not cand.get("agent_id"):
+                raw_data = cand.get("raw_data") or {}
+                if isinstance(raw_data, str):
+                    try:
+                        raw_data = json.loads(raw_data) if raw_data else {}
+                    except Exception:
+                        raw_data = {}
+                agent_info = _agent_info_from_raw_data(raw_data)
 
             prop = await process_property(ai_engine, candidate, description_en, agent_info=agent_info)
             if prop:
@@ -405,6 +532,12 @@ async def fetch_single_property(candidate_id: int, db: Database, ai_engine: AIEn
             detail_photo_urls = detail_page.photo_urls
             raw_data = detail_page.raw_data
 
+            # 合并 raw_data：保留 API 阶段已有的 api_individuals 等信息
+            existing_raw_data = json.loads(cand.get("raw_data") or "{}") if cand.get("raw_data") else {}
+            if existing_raw_data:
+                existing_raw_data.update(raw_data)
+                raw_data = existing_raw_data
+
             await db.update_candidate_description(cand["id"], description)
             await db.update_candidate_photos(cand["id"], detail_photo_urls)
             await db.update_candidate_raw_data(cand["id"], raw_data)
@@ -437,7 +570,7 @@ async def fetch_single_property(candidate_id: int, db: Database, ai_engine: AIEn
 
             description_en = description or ""
 
-            # 3. 查询经纪信息
+            # 3. 查询经纪信息（优先 agents 表，城市爬虫 fallback 到 api_individuals）
             agent_row = await db.get_agent(cand["agent_id"]) if cand.get("agent_id") else None
             agent_info = None
             if agent_row:
@@ -446,6 +579,8 @@ async def fetch_single_property(candidate_id: int, db: Database, ai_engine: AIEn
                     "brokerage": agent_row.get("brokerage", ""),
                     "phone": agent_row.get("phone", ""),
                 }
+            elif not cand.get("agent_id"):
+                agent_info = _agent_info_from_raw_data(raw_data)
 
             # 4. AI 处理
             logger.info(
