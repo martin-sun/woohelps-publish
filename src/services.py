@@ -1,5 +1,6 @@
 import asyncio
 import json
+from collections import defaultdict
 from datetime import datetime, timezone
 
 from loguru import logger
@@ -150,57 +151,96 @@ async def fetch_selected_details(
 
 async def fetch_one_candidate(cand: dict, db: Database, ai_engine: AIEngine) -> int:
     """抓取单个 candidate 的详情页 + AI 处理，返回新 activity 数量"""
+    total_fetched, total_new = await fetch_candidates_batch([cand], db, ai_engine)
+    return total_new
+
+
+async def fetch_candidates_batch(
+    candidates: list[dict], db: Database, ai_engine: AIEngine,
+) -> tuple[int, int]:
+    """用单个 Playwright 浏览器顺序抓取多个 candidate 的详情页 + AI 处理。
+    按 city_slug 分组复用 context。返回 (total_attempted, total_new)。
+    total_attempted 是「已尝试」数（含抓取失败），total_new 是实际新增活动数。
+    """
+    if not candidates:
+        return 0, 0
+
     from playwright.async_api import async_playwright
 
+    by_city: dict[str, list[dict]] = defaultdict(list)
+    for c in candidates:
+        by_city[c["city_slug"]].append(c)
+
     settings = get_settings()
+    total_attempted = 0
+    total_new = 0
+    total_count = len(candidates)
+
     async with async_playwright() as p:
         browser = await launch_browser(p, settings)
-        context = await new_stealth_context(browser, settings, city_slug=cand["city_slug"])
         try:
-            raw_page = await _fetch_single_page(
-                context, cand["source"], cand["source_url"], cand["city_slug"],
-            )
-            if not raw_page:
-                await db.mark_candidate_fetched(cand["id"])
-                return 0
+            for city_slug, city_cands in by_city.items():
+                context = await new_stealth_context(browser, settings, city_slug=city_slug)
+                try:
+                    for cand in city_cands:
+                        total_attempted += 1
+                        progress = f"[batch {total_attempted}/{total_count}]"
+                        try:
+                            raw_page = await _fetch_single_page(
+                                context, cand["source"], cand["source_url"], cand["city_slug"],
+                            )
+                            if not raw_page:
+                                await db.mark_candidate_fetched(cand["id"])
+                                logger.info(f"{progress} candidate_id={cand['id']} {cand['source_url']}: no raw page")
+                                continue
 
-            html_hash = compute_html_hash(raw_page.raw_html)
-            cached = await db.get_processed_page(raw_page.source, raw_page.source_url)
-            if cached and cached["html_hash"] == html_hash and cached["status"] in ("success", "empty"):
-                await db.mark_candidate_fetched(cand["id"])
-                return 0
+                            html_hash = compute_html_hash(raw_page.raw_html)
+                            cached = await db.get_processed_page(raw_page.source, raw_page.source_url)
+                            if cached and cached["html_hash"] == html_hash and cached["status"] in ("success", "empty"):
+                                await db.mark_candidate_fetched(cand["id"])
+                                logger.info(f"{progress} candidate_id={cand['id']} {cand['source_url']}: cached")
+                                continue
 
-            activities = await ai_engine.process(raw_page)
+                            activities = await ai_engine.process(raw_page)
 
-            new_count = 0
-            saved_activity_id = None
-            for activity in activities:
-                if await db.exists(activity.source, activity.source_id):
-                    continue
-                activity.content_hash = compute_content_hash(activity)
-                if await db.exists_content_hash(activity.city_slug, activity.content_hash):
-                    continue
+                            new_count = 0
+                            for activity in activities:
+                                saved_activity_id = None
+                                if await db.exists(activity.source, activity.source_id):
+                                    continue
+                                activity.content_hash = compute_content_hash(activity)
+                                if await db.exists_content_hash(activity.city_slug, activity.content_hash):
+                                    continue
+                                fee_amount, fee_parsed_free = parse_fee_amount(activity.price)
+                                activity.fee_amount = fee_amount
+                                activity.fee_parsed_free = fee_parsed_free
+                                saved_activity_id = await db.save(activity)
+                                new_count += 1
+                                await db.mark_candidate_fetched(cand["id"], saved_activity_id)
 
-                fee_amount, fee_parsed_free = parse_fee_amount(activity.price)
-                activity.fee_amount = fee_amount
-                activity.fee_parsed_free = fee_parsed_free
+                            if new_count == 0:
+                                await db.mark_candidate_fetched(cand["id"])
 
-                saved_activity_id = await db.save(activity)
-                new_count += 1
-                await db.mark_candidate_fetched(cand["id"], saved_activity_id)
-
-            if new_count == 0:
-                await db.mark_candidate_fetched(cand["id"])
-
-            await db.save_processed_page(
-                raw_page.source, raw_page.source_url, html_hash,
-                "success" if activities else "empty",
-                activity_count=len(activities),
-            )
-            return new_count
+                            await db.save_processed_page(
+                                raw_page.source, raw_page.source_url, html_hash,
+                                "success" if activities else "empty",
+                                activity_count=len(activities),
+                            )
+                            total_new += new_count
+                            logger.info(
+                                f"{progress} candidate_id={cand['id']} {cand['source_url']}: "
+                                f"{len(activities)} activities, {new_count} new"
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"{progress} candidate_id={cand['id']} fetch failed for {cand['source_url']}: {e}"
+                            )
+                finally:
+                    await context.close()
         finally:
-            await context.close()
             await browser.close()
+
+    return total_attempted, total_new
 
 
 async def _fetch_single_page(context, source: str, url: str, city_slug: str) -> "RawPage | None":

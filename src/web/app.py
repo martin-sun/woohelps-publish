@@ -26,7 +26,7 @@ from src.config.settings import CITIES, get_settings
 
 from src.services import (
     discover_city,
-    fetch_one_candidate,
+    fetch_candidates_batch,
     publish_one,
 )
 from src.services_property import (
@@ -470,28 +470,32 @@ async def candidates_select(request: Request):
         return RedirectResponse(url="/activities/candidates", status_code=303)
 
     await db.update_candidate_status(candidate_ids, "selected")
-    ai_engine = _ai_engine
 
+    candidates = []
     for cid in candidate_ids:
-        cand = await db.get_candidate(cid)
-        if not cand:
-            continue
-        task_id = await db.create_task(
-            "fetch_details",
-            detail=cand["source_url"][:80],
-        )
+        c = await db.get_candidate(cid)
+        if c:
+            candidates.append(c)
+    if not candidates:
+        return RedirectResponse(url="/tasks", status_code=303)
 
-        async def _run(cand=cand, task_id=task_id):
-            try:
-                new_count = await fetch_one_candidate(cand, db, ai_engine)
-                await db.update_scrape_task(task_id, total_fetched=1, total_new=new_count)
-                await db.complete_scrape_task(task_id)
-            except Exception as e:
-                logger.error(f"Fetch detail failed for {cand['source_url']}: {e}")
-                await db.fail_scrape_task(task_id, str(e))
+    detail = f"{len(candidates)} candidates"
+    task_id = await db.create_task("fetch_details", detail=detail)
 
-        asyncio.create_task(_run())
+    async def _run(cands=candidates):
+        try:
+            total_attempted, total_new = await fetch_candidates_batch(
+                cands, db, _ai_engine,
+            )
+            await db.update_scrape_task(
+                task_id, total_fetched=total_attempted, total_new=total_new,
+            )
+            await db.complete_scrape_task(task_id)
+        except Exception as e:
+            logger.error(f"Batch fetch candidates failed: {e}")
+            await db.fail_scrape_task(task_id, str(e))
 
+    asyncio.create_task(_run())
     return RedirectResponse(url="/tasks", status_code=303)
 
 
