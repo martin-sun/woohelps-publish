@@ -513,6 +513,35 @@ class Database:
                 activity_id, candidate_id,
             )
 
+    async def reset_stuck_candidates(self, city_slug: str | None = None) -> int:
+        """Reset candidates stuck in 'selected' + fetched_detail=FALSE back to 'pending'."""
+        conditions = ["human_status = 'selected'", "fetched_detail = FALSE"]
+        args: list = []
+        n = 0
+        if city_slug:
+            n += 1; conditions.append(f"city_slug = ${n}"); args.append(city_slug)
+        where = f"WHERE {' AND '.join(conditions)}"
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                f"UPDATE candidate_activities SET human_status = 'pending' {where}", *args,
+            )
+            # result is like 'UPDATE 5'
+            return int(result.split()[-1]) if result else 0
+
+    async def count_stuck_candidates(self, city_slug: str | None = None) -> int:
+        """Count candidates stuck in 'selected' + fetched_detail=FALSE."""
+        conditions = ["human_status = 'selected'", "fetched_detail = FALSE"]
+        args: list = []
+        n = 0
+        if city_slug:
+            n += 1; conditions.append(f"city_slug = ${n}"); args.append(city_slug)
+        where = f"WHERE {' AND '.join(conditions)}"
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT COUNT(*) as cnt FROM candidate_activities {where}", *args,
+            )
+            return row["cnt"] if row else 0
+
     async def get_candidates_to_fetch(
         self, city_slug: str | None = None,
     ) -> list[dict]:

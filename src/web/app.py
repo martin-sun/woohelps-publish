@@ -153,6 +153,11 @@ async def lifespan(app: FastAPI):
         if t["status"] == "running":
             await _db.fail_scrape_task(t["id"], "Server restarted")
 
+    # Reset stuck candidates (selected but not fetched)
+    stuck = await _db.reset_stuck_candidates()
+    if stuck:
+        logger.info(f"Reset {stuck} stuck candidates to pending on startup")
+
     logger.info("Web app started")
 
     _fetch_worker_task = asyncio.create_task(_fetch_worker())
@@ -449,6 +454,7 @@ async def candidates_page(request: Request, city: str = "", ai_worth: str = "1",
     candidates = await db.list_candidates(city_slug, ai_filter, ai_failed, status_filter, limit=limit, offset=offset)
     total = await db.count_candidates(city_slug, ai_filter, ai_failed, status_filter)
     total_pages = max(1, (total + limit - 1) // limit)
+    stuck_count = await db.count_stuck_candidates(city_slug)
     return templates.TemplateResponse(request, "candidates.html", {
         "candidates": candidates,
         "total": total,
@@ -458,6 +464,7 @@ async def candidates_page(request: Request, city: str = "", ai_worth: str = "1",
         "current_ai_worth": ai_worth,
         "current_status": status,
         "cities": CITIES,
+        "stuck_count": stuck_count,
     })
 
 
@@ -494,6 +501,9 @@ async def candidates_select(request: Request):
         except Exception as e:
             logger.error(f"Batch fetch candidates failed: {e}")
             await db.fail_scrape_task(task_id, str(e))
+            # Reset all stuck candidates back to pending
+            ids = [c["id"] for c in cands]
+            await db.update_candidate_status(ids, "pending")
 
     asyncio.create_task(_run())
     return RedirectResponse(url="/tasks", status_code=303)
@@ -517,6 +527,17 @@ async def candidates_delete(request: Request):
     candidate_ids = [int(x) for x in form.getlist("candidate_ids")]
     if candidate_ids:
         await db.delete_candidates(candidate_ids)
+    referer = request.headers.get("referer", "/activities/candidates")
+    return RedirectResponse(url=referer, status_code=303)
+
+
+@app.post("/activities/candidates/reset-stuck")
+async def candidates_reset_stuck(request: Request):
+    db = _get_db()
+    form = await get_form(request)
+    city_slug = form.get("city", "").strip() or None
+    reset = await db.reset_stuck_candidates(city_slug)
+    logger.info(f"Manually reset {reset} stuck candidates (city={city_slug or 'all'})")
     referer = request.headers.get("referer", "/activities/candidates")
     return RedirectResponse(url=referer, status_code=303)
 

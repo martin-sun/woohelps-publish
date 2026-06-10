@@ -101,6 +101,8 @@ async def fetch_selected_details(
                     context, cand["source"], cand["source_url"], cand["city_slug"],
                 )
                 if not raw_page:
+                    # Transient fetch failure — allow retry
+                    await db.update_candidate_status([cand["id"]], "pending")
                     continue
 
                 html_hash = compute_html_hash(raw_page.raw_html)
@@ -144,6 +146,8 @@ async def fetch_selected_details(
 
             except Exception as e:
                 logger.error(f"Fetch detail failed for {cand['source_url']}: {e}")
+                # Reset status so it can be re-fetched
+                await db.update_candidate_status([cand['id']], 'pending')
 
         await context.close()
         await browser.close()
@@ -190,8 +194,9 @@ async def fetch_candidates_batch(
                                 context, cand["source"], cand["source_url"], cand["city_slug"],
                             )
                             if not raw_page:
-                                await db.mark_candidate_fetched(cand["id"])
-                                logger.info(f"{progress} candidate_id={cand['id']} {cand['source_url']}: no raw page")
+                                # Transient fetch failure — allow retry
+                                await db.update_candidate_status([cand["id"]], "pending")
+                                logger.info(f"{progress} candidate_id={cand['id']} {cand['source_url']}: no raw page, reset to pending")
                                 continue
 
                             html_hash = compute_html_hash(raw_page.raw_html)
@@ -235,6 +240,8 @@ async def fetch_candidates_batch(
                             logger.error(
                                 f"{progress} candidate_id={cand['id']} fetch failed for {cand['source_url']}: {e}"
                             )
+                            # Reset status so it can be re-fetched
+                            await db.update_candidate_status([cand['id']], 'pending')
                 finally:
                     await context.close()
         finally:

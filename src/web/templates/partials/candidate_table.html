@@ -1,5 +1,5 @@
 <!-- 操作栏 -->
-<div class="flex gap-3 mb-4">
+<div class="flex gap-3 mb-4 flex-wrap">
     <form action="/activities/candidates/refilter" method="post" class="flex gap-2 items-center">
         <input type="hidden" name="city" value="{{ current_city }}">
         <button type="submit" class="bg-yellow-600 text-white px-4 py-2 rounded text-sm hover:bg-yellow-700">
@@ -7,6 +7,16 @@
         </button>
         <span class="text-xs text-gray-500">重新过滤 AI 失败的条目</span>
     </form>
+    {% if stuck_count %}
+    <form action="/activities/candidates/reset-stuck" method="post" class="flex gap-2 items-center">
+        <input type="hidden" name="city" value="{{ current_city }}">
+        <button type="submit" class="bg-orange-600 text-white px-4 py-2 rounded text-sm hover:bg-orange-700"
+                onclick="return confirm('确定重置 {{ stuck_count }} 条卡住的候选为待处理？')">
+            修复卡住的候选 ({{ stuck_count }})
+        </button>
+        <span class="text-xs text-gray-500">将抓取异常中断的候选重置为待处理</span>
+    </form>
+    {% endif %}
 </div>
 
 <div class="bg-white rounded-lg border">
