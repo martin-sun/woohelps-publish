@@ -8,3 +8,5 @@ build/
 .env
 data/
 *.db
+.web.pid
+web.log
