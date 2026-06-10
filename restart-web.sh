@@ -23,6 +23,15 @@ stop_service() {
 
 start_service() {
     echo "Starting web admin UI on http://127.0.0.1:8000"
+    # 自动检测 Xvfb 显示号，用于 headless=False 的 Playwright
+    if [[ -z "${DISPLAY:-}" ]]; then
+        local xvfb_display
+        xvfb_display=$(pgrep -a Xvfb 2>/dev/null | grep -oP '\s:\d+\s' | head -1 | tr -d ' :')
+        if [[ -n "$xvfb_display" ]]; then
+            export DISPLAY=":$xvfb_display"
+            echo "Detected Xvfb on DISPLAY=$DISPLAY"
+        fi
+    fi
     nohup uv run uvicorn src.web.app:app --host 127.0.0.1 --port 8000 --reload > "$LOG_FILE" 2>&1 &
     local pid=$!
     echo "$pid" > "$PID_FILE"
