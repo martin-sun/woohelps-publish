@@ -21,7 +21,7 @@
             <select name="city" class="border rounded px-3 py-1.5 text-sm">
                 <option value="">全部</option>
                 {% for slug, info in cities.items() %}
-                <option value="{{ slug }}" {% if current_city == slug %}selected{% endif %}>{{ info.eng_name }}</option>
+                <option value="{{ slug }}" {% if current_city == slug %}selected{% endif %}>{{ info.name }}</option>
                 {% endfor %}
             </select>
         </div>

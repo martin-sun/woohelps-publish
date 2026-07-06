@@ -19,7 +19,7 @@
             {% for slug, info in cities.items() %}
                 <label class="flex items-center gap-1.5 text-sm">
                     <input type="checkbox" name="city_slugs" value="{{ slug }}" class="city-cb rounded border-gray-300">
-                    {{ info.eng_name }}
+                    {{ info.name }}
                 </label>
             {% endfor %}
             </div>
@@ -36,7 +36,7 @@
             <select name="city" class="border rounded px-3 py-1.5 text-sm">
                 <option value="" {% if not current_city %}selected{% endif %}>全部</option>
                 {% for slug, info in cities.items() %}
-                <option value="{{ slug }}" {% if current_city == slug %}selected{% endif %}>{{ info.eng_name }}</option>
+                <option value="{{ slug }}" {% if current_city == slug %}selected{% endif %}>{{ info.name }}</option>
                 {% endfor %}
             </select>
         </div>

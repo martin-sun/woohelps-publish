@@ -74,23 +74,25 @@ class WoohelpsPublisher:
         """启动时调用平台 API 获取城市和国家 ID 映射"""
         headers = {"LOGIN-SESSION": self.login_session}
         resp = await self.client.get(
-            f"{self.base_url}/api/applet/city/hot/get",
+            f"{self.base_url}/api/applet/city/hot/v2/get",
             headers=headers,
         )
         data = resp.json()
         for country in data.get("countries", []):
             country_id = country.get("id") or country.get("country_id")
             for city in country.get("cities", []):
-                eng_name = city.get("eng_name") or city.get("city_eng_name", "")
+                # 用中文名(name)做 key —— publish 是内部工具,operator 看中文更直观
+                name = city.get("name") or ""
                 city_id = city.get("id") or city.get("city_id")
-                if eng_name and city_id:
-                    self._city_map[eng_name.lower()] = city_id
+                if name and city_id:
+                    self._city_map[name] = city_id
                     if country_id:
                         self._city_to_country[city_id] = country_id
         logger.info(f"Fetched city mapping: {self._city_map}")
 
-    def get_city_id(self, eng_name: str) -> int | None:
-        return self._city_map.get(eng_name.lower())
+    def get_city_id(self, name: str) -> int | None:
+        """按中文城市名查 city_id"""
+        return self._city_map.get(name)
 
     def get_country_id(self, city_id: int) -> int | None:
         return self._city_to_country.get(city_id)

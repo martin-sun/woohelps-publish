@@ -289,6 +289,19 @@ def _extract_json(text: str) -> str | None:
     return None
 
 
+def _extract_response_text(response) -> str:
+    """从 Anthropic Message 响应中提取文本块，跳过 ThinkingBlock。
+
+    Kimi k2.6 等支持思考模式的模型，响应 content[0] 可能是 ThinkingBlock
+    （只有 .thinking 属性，没有 .text），直接 response.content[0].text 会抛
+    'ThinkingBlock' object has no attribute 'text'。
+    """
+    for block in response.content:
+        if getattr(block, "type", None) == "text":
+            return block.text
+    return ""
+
+
 def _generate_source_id(
     source_url: str, title_en: str,
     start_date: str | None, start_time: str | None, address: str,
@@ -359,7 +372,7 @@ class AIEngine:
                 }],
             )
 
-        text = response.content[0].text
+        text = _extract_response_text(response)
         json_text = _extract_json(text)
         if not json_text:
             logger.warning(f"No JSON found in list extraction for {page_url}")
@@ -405,7 +418,7 @@ class AIEngine:
                             ),
                         }],
                     )
-                text = response.content[0].text
+                text = _extract_response_text(response)
                 json_text = _extract_json(text)
                 if not json_text:
                     logger.warning(f"No JSON in filter response for {city_slug} batch {batch_start}")
@@ -462,7 +475,7 @@ class AIEngine:
                 }],
             )
 
-        text = response.content[0].text
+        text = _extract_response_text(response)
         json_text = _extract_json(text)
         if not json_text:
             logger.warning(f"No JSON found in LLM response for {raw_page.source_url}")
@@ -765,7 +778,7 @@ async def process_property(
             }],
         )
 
-    text = response.content[0].text
+    text = _extract_response_text(response)
     json_text = _extract_json(text)
     if not json_text:
         logger.warning(f"No JSON found in property processing for {candidate.source_id}")

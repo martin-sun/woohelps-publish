@@ -288,9 +288,9 @@ async def publish_one(
     if not city_info:
         return {"error": f"未知城市: {activity['city_slug']}"}
 
-    city_id = publisher.get_city_id(city_info["eng_name"])
+    city_id = publisher.get_city_id(city_info["name"])
     if not city_id:
-        return {"error": f"平台未找到城市: {city_info['eng_name']}"}
+        return {"error": f"平台未找到城市: {city_info['name']}"}
 
     from src.models.activity import ProcessedActivity
     pa = ProcessedActivity(

@@ -424,7 +424,6 @@ async def publish_one_property(
     city_slug = prop_row["city_slug"]
     agent_id = prop_row.get("agent_id")
     city_id = None
-    city_eng_name = None
 
     if agent_id:
         agent_row = await db.get_agent(agent_id)
@@ -432,15 +431,15 @@ async def publish_one_property(
             agent_cities = json.loads(agent_row.get("city_slugs") or "[]")
             if agent_cities:
                 first_agent_city = agent_cities[0]
-                city_eng_name = CITIES.get(first_agent_city, {}).get("eng_name", first_agent_city)
-                city_id = publisher.get_city_id(city_eng_name)
+                city_name = CITIES.get(first_agent_city, {}).get("name", first_agent_city)
+                city_id = publisher.get_city_id(city_name)
 
     if not city_id:
-        city_eng_name = CITIES.get(city_slug, {}).get("eng_name", city_slug)
-        city_id = publisher.get_city_id(city_eng_name)
+        city_name = CITIES.get(city_slug, {}).get("name", city_slug)
+        city_id = publisher.get_city_id(city_name)
 
     if not city_id:
-        return {"error": f"平台未找到城市映射: {city_eng_name}"}
+        return {"error": f"平台未找到城市映射: {city_name}"}
 
     # 加载图片 URL
     image_urls = json.loads(prop_row["image_urls"]) if prop_row["image_urls"] else []
