@@ -76,7 +76,7 @@
 |------|---------|------|
 | 语言 | Python 3.12+ | AI/爬虫生态最成熟 |
 | 爬虫 | Playwright | 抓取原始 HTML，统一逻辑 |
-| AI 引擎 | Kimi kimi-k2.6 (月之暗面) | 提取+翻译+摘要+评估，统一 Prompt |
+| AI 引擎 | Kimi kimi-k2.7 (月之暗面) | 提取+翻译+摘要+评估，统一 Prompt |
 | HTTP 客户端 | httpx + Playwright | 异步 HTTP + 浏览器渲染 |
 | 数据库 | SQLite → PostgreSQL | 轻量起步，后续可迁移 |
 | 管理界面 | FastAPI + Jinja2 + HTMX | 人工审核、选择性发布 |

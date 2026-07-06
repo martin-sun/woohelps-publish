@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     # AI 引擎 (Kimi API, Anthropic 兼容协议)
     KIMI_API_KEY: str
     KIMI_BASE_URL: str = "https://api.kimi.com/coding/"
-    KIMI_MODEL: str = "kimi-k2.6"
+    KIMI_MODEL: str = "kimi-k2.7"
     KIMI_MAX_TOKENS: int = 8192
 
     # 海外新生活平台 API

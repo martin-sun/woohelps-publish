@@ -39,7 +39,7 @@ bleach>=6.0
 ```
 KIMI_API_KEY=
 KIMI_BASE_URL=https://api.kimi.com/coding/
-KIMI_MODEL=kimi-k2.6
+KIMI_MODEL=kimi-k2.7
 WOOHELPS_API_URL=https://www.woohelps.com
 WOOHELPS_LOGIN_SESSION=
 DB_PATH=./data/activities.db

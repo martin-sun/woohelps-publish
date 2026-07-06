@@ -6,14 +6,14 @@ AI 引擎承担两个任务：
 1. **预过滤**（`filter_activities`）：基于列表页摘要批量判断活动是否值得抓取详情页
 2. **详情处理**（`process`）：接收详情页原始 HTML，一步完成提取结构化数据 + 翻译为中文 + 生成摘要 + 质量评估
 
-两个任务使用不同的 Prompt，同一模型（kimi-k2.6），通过 Kimi API（月之暗面，Anthropic 兼容协议）调用。
+两个任务使用不同的 Prompt，同一模型（kimi-k2.7），通过 Kimi API（月之暗面，Anthropic 兼容协议）调用。
 
 ## AI 模型
 
 | 任务 | 模型 | 说明 |
 |------|------|------|
-| 预过滤 | kimi-k2.6 | 批量判断摘要是否值得抓详情 |
-| 提取 + 翻译 + 摘要 + 质量评估 | kimi-k2.6 | 详情页处理，一次调用完成 |
+| 预过滤 | kimi-k2.7 | 批量判断摘要是否值得抓详情 |
+| 提取 + 翻译 + 摘要 + 质量评估 | kimi-k2.7 | 详情页处理，一次调用完成 |
 
 > 使用 Kimi Coding Plan，通过 Anthropic 兼容协议调用，费用极低。
 
@@ -172,7 +172,7 @@ activity_type 取值：
 ```
 活动摘要列表 (title/date/address/price/description)
     │
-    └── LLM Filter (kimi-k2.6, 批量判断)
+    └── LLM Filter (kimi-k2.7, 批量判断)
            ├── worth_fetching=true  → 保留，存入 candidate_activities
            └── worth_fetching=false → 标记原因，不入库或入库供参考
 ```
@@ -184,7 +184,7 @@ RawPage (原始 HTML)
     │
     ├── HTML 预清洗 (本地裁剪)
     │
-    └── LLM Process (kimi-k2.6, 一次调用)
+    └── LLM Process (kimi-k2.7, 一次调用)
            ├── 提取活动信息（支持一页多活动）
            ├── 翻译为中文
            ├── 生成摘要
@@ -391,7 +391,7 @@ def parse_llm_datetime(date_str: str | None, time_str: str | None, city_slug: st
 # 环境变量
 KIMI_BASE_URL=https://api.kimi.com/coding/
 KIMI_API_KEY=your-api-key
-KIMI_MODEL=kimi-k2.6
+KIMI_MODEL=kimi-k2.7
 ```
 
 ## 成本估算
@@ -400,7 +400,7 @@ KIMI_MODEL=kimi-k2.6
 
 | 任务 | 模型 | 单次 Token 估算 | 说明 |
 |------|------|----------------|------|
-| 提取+翻译+摘要+评估（一次完成） | kimi-k2.6 | ~3000 in + 2000 out（预清洗后） | Coding Plan 套餐内，无需额外计费 |
+| 提取+翻译+摘要+评估（一次完成） | kimi-k2.7 | ~3000 in + 2000 out（预清洗后） | Coding Plan 套餐内，无需额外计费 |
 
 > 统一 Prompt 比拆分多次调用更省 token：上下文只传一次 HTML，输出一次性完成。质量优先场景下可考虑拆分为"提取+评估"和"翻译+摘要"两次调用，以获得更精准的结果。
 
