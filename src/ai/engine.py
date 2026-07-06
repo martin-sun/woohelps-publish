@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import anthropic
@@ -180,13 +180,12 @@ activity_type 取值：
 # 过滤批大小：每次发给 AI 的活动数量
 FILTER_BATCH_SIZE = 25
 
-# 活动日期窗口：只保留未来 N 天内的活动
-DATE_WINDOW_DAYS = 30
+# 活动日期窗口：只保留未来活动，过滤已结束的活动
 
 
 def filter_by_date(summaries: list[dict]) -> list[dict]:
-    """过滤掉 start_date 超出未来 DATE_WINDOW_DAYS 天的活动。"""
-    cutoff = datetime.now(timezone.utc).date() + timedelta(days=DATE_WINDOW_DAYS)
+    """过滤掉已结束（过去）的活动，保留所有未来活动。"""
+    today = datetime.now(timezone.utc).date()
     kept = []
     for s in summaries:
         raw = s.get("start_date")
@@ -195,10 +194,10 @@ def filter_by_date(summaries: list[dict]) -> list[dict]:
             continue
         try:
             event_date = datetime.strptime(raw, "%Y-%m-%d").date()
-            if event_date <= cutoff:
-                kept.append(s)
-            else:
-                logger.debug(f"Skipped future event: {s.get('title', '')} ({raw})")
+            if event_date < today:
+                logger.debug(f"Skipped past event: {s.get('title', '')} ({raw})")
+                continue
+            kept.append(s)
         except ValueError:
             kept.append(s)  # 解析失败的保留
     return kept

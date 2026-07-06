@@ -5,18 +5,16 @@ from datetime import datetime, timezone
 
 from loguru import logger
 
-from src.ai.engine import AIEngine, DATE_WINDOW_DAYS, filter_by_date
+from src.ai.engine import AIEngine, filter_by_date
 from src.config.settings import CITIES, get_settings
 from src.dedup.deduplicator import compute_content_hash, compute_html_hash
 from src.publisher.woohelps import WoohelpsPublisher, parse_fee_amount
-from src.scrapers.familyfun import FamilyFunCanadaScraper
 from src.scrapers.todocanada import TodoCanadaScraper
 from src.scrapers.browser import launch_browser, new_stealth_context
 from src.storage.db import Database
 
 SCRAPERS = {
     "todocanada": TodoCanadaScraper,
-    "familyfuncanada": FamilyFunCanadaScraper,
 }
 
 
@@ -43,7 +41,7 @@ async def discover_city(
         before_date = len(summaries)
         summaries = filter_by_date(summaries)
         if len(summaries) < before_date:
-            logger.info(f"{city_slug}/{name}: date filter removed {before_date - len(summaries)} events beyond {DATE_WINDOW_DAYS} days")
+            logger.info(f"{city_slug}/{name}: date filter removed {before_date - len(summaries)} past events")
 
         logger.info(f"{city_slug}/{name}: discovered {len(summaries)} summaries")
 

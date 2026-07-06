@@ -5,7 +5,7 @@ from datetime import datetime
 @dataclass
 class RawPage:
     """爬虫输出 — 一个详情页的原始内容"""
-    source: str                    # 数据来源标识 (todocanada/familyfuncanada/discoversaskatoon)
+    source: str                    # 数据来源标识 (todocanada/discoversaskatoon)
     source_url: str                # 详情页 URL
     raw_html: str                  # 详情页完整 HTML
     city_slug: str                 # 城市 slug (toronto/vancouver/...)
