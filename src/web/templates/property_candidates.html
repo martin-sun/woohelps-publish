@@ -68,9 +68,12 @@
         </thead>
         <tbody>
             {% for c in candidates %}
-            <tr class="border-b hover:bg-gray-50">
+            {% set is_done = c.fetched_detail %}
+            <tr class="border-b hover:bg-gray-50" data-candidate-id="{{ c.id }}">
                 <td class="px-3 py-3">
-                    <input form="batch-form" type="checkbox" name="candidate_ids" value="{{ c.id }}" class="candidate-cb rounded border-gray-300">
+                    <input form="batch-form" type="checkbox" name="candidate_ids" value="{{ c.id }}" 
+                           class="candidate-cb rounded border-gray-300"
+                           {% if is_done %}disabled{% endif %}>
                 </td>
                 <td class="px-3 py-3">{{ c.id }}</td>
                 <td class="px-3 py-3">
@@ -90,8 +93,12 @@
                 <td class="px-3 py-3">{% if c.fetched_detail %}✅{% else %}❌{% endif %}</td>
                 <td class="px-3 py-3">{% if c.property_id %}✅ {{ c.property_id }}{% else %}❌{% endif %}</td>
                 <td class="px-3 py-3">
-                    <form action="/properties/candidates/{{ c.id }}/fetch" method="post" class="inline">
-                        <button type="submit" class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100">抓取并处理</button>
+                    <form action="/properties/candidates/{{ c.id }}/fetch" method="post" class="inline property-fetch-form">
+                        <button type="submit" 
+                                class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100 {% if is_done %}opacity-50 cursor-not-allowed{% endif %}"
+                                {% if is_done %}disabled{% endif %}>
+                            抓取并处理
+                        </button>
                     </form>
                 </td>
             </tr>
@@ -113,4 +120,61 @@
     {% endfor %}
 </div>
 {% endif %}
+
+<script>
+(function() {
+    let submitting = false;
+
+    function disableCandidate(id) {
+        const cb = document.querySelector('input.candidate-cb[value="' + id + '"]');
+        if (cb) {
+            cb.disabled = true;
+            cb.checked = false;
+        }
+        const row = document.querySelector('tr[data-candidate-id="' + id + '"]');
+        if (row) {
+            const btn = row.querySelector('button[type="submit"]');
+            if (btn) {
+                btn.disabled = true;
+                btn.classList.add('opacity-50', 'cursor-not-allowed');
+            }
+        }
+    }
+
+    function getFetchIds(form, submitter) {
+        const ids = [];
+        const action = form.action || '';
+        // 单行抓取：/properties/candidates/{id}/fetch
+        const singleMatch = action.match(/\/properties\/candidates\/(\d+)\/fetch$/);
+        if (singleMatch) {
+            ids.push(singleMatch[1]);
+            return ids;
+        }
+        // 批量抓取：batch-form + formaction=/properties/candidates/fetch
+        if (form.id === 'batch-form') {
+            const formaction = submitter ? (submitter.getAttribute('formaction') || submitter.formAction || '') : '';
+            if (formaction === '/properties/candidates/fetch' || formaction.endsWith('/properties/candidates/fetch')) {
+                return Array.from(form.querySelectorAll('input[name="candidate_ids"]:checked')).map(cb => cb.value);
+            }
+        }
+        return ids;
+    }
+
+    document.addEventListener('submit', function(e) {
+        if (submitting) {
+            e.preventDefault();
+            return;
+        }
+        submitting = true;
+
+        const ids = getFetchIds(e.target, e.submitter);
+        ids.forEach(disableCandidate);
+
+        document.querySelectorAll('button[type="submit"]').forEach(function(btn) {
+            btn.disabled = true;
+            btn.classList.add('opacity-50', 'cursor-not-allowed');
+        });
+    }, true);
+})();
+</script>
 {% endblock %}
