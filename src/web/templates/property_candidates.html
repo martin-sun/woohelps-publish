@@ -53,7 +53,7 @@
     <table class="w-full text-sm">
         <thead class="bg-gray-50 border-b">
             <tr>
-                <th class="px-3 py-3"><input type="checkbox" onclick="document.querySelectorAll('.candidate-cb').forEach(cb => cb.checked = this.checked)" class="rounded border-gray-300"></th>
+                <th class="px-3 py-3"><input type="checkbox" onclick="document.querySelectorAll('.candidate-cb').forEach(cb => { if (!cb.disabled) cb.checked = this.checked; })" class="rounded border-gray-300"></th>
                 <th class="px-3 py-3 text-left font-medium text-gray-600">ID</th>
                 <th class="px-3 py-3 text-left font-medium text-gray-600">地址/标题</th>
                 <th class="px-3 py-3 text-left font-medium text-gray-600">价格</th>
@@ -62,18 +62,16 @@
                 <th class="px-3 py-3 text-left font-medium text-gray-600">状态</th>
                 <th class="px-3 py-3 text-left font-medium text-gray-600">人工</th>
                 <th class="px-3 py-3 text-left font-medium text-gray-600">详情</th>
-                <th class="px-3 py-3 text-left font-medium text-gray-600">Property</th>
                 <th class="px-3 py-3 text-left font-medium text-gray-600">操作</th>
             </tr>
         </thead>
         <tbody>
             {% for c in candidates %}
-            {% set is_done = c.fetched_detail %}
+            {% set is_done = c.property_id %}
             <tr class="border-b hover:bg-gray-50" data-candidate-id="{{ c.id }}">
                 <td class="px-3 py-3">
-                    <input form="batch-form" type="checkbox" name="candidate_ids" value="{{ c.id }}" 
-                           class="candidate-cb rounded border-gray-300"
-                           {% if is_done %}disabled{% endif %}>
+                    <input form="batch-form" type="checkbox" name="candidate_ids" value="{{ c.id }}"
+                           class="candidate-cb rounded border-gray-300">
                 </td>
                 <td class="px-3 py-3">{{ c.id }}</td>
                 <td class="px-3 py-3">
@@ -90,20 +88,18 @@
                     </span>
                 </td>
                 <td class="px-3 py-3">{{ c.human_status }}</td>
-                <td class="px-3 py-3">{% if c.fetched_detail %}✅{% else %}❌{% endif %}</td>
-                <td class="px-3 py-3">{% if c.property_id %}✅ {{ c.property_id }}{% else %}❌{% endif %}</td>
+                <td class="px-3 py-3">{% if is_done %}✅ {{ c.property_id }}{% else %}❌{% endif %}</td>
                 <td class="px-3 py-3">
                     <form action="/properties/candidates/{{ c.id }}/fetch" method="post" class="inline property-fetch-form">
-                        <button type="submit" 
-                                class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100 {% if is_done %}opacity-50 cursor-not-allowed{% endif %}"
-                                {% if is_done %}disabled{% endif %}>
-                            抓取并处理
+                        <button type="submit"
+                                class="text-xs bg-blue-50 text-blue-600 px-2 py-1 rounded hover:bg-blue-100 {% if is_done %}ring-1 ring-green-300{% endif %}">
+                            {% if is_done %}重新抓取{% else %}抓取并处理{% endif %}
                         </button>
                     </form>
                 </td>
             </tr>
             {% else %}
-            <tr><td colspan="11" class="px-4 py-8 text-center text-gray-500">暂无候选房源</td></tr>
+            <tr><td colspan="10" class="px-4 py-8 text-center text-gray-500">暂无候选房源</td></tr>
             {% endfor %}
         </tbody>
     </table>
@@ -137,6 +133,8 @@
             if (btn) {
                 btn.disabled = true;
                 btn.classList.add('opacity-50', 'cursor-not-allowed');
+                btn.dataset.origText = btn.textContent.trim();
+                btn.textContent = '处理中...';
             }
         }
     }
@@ -160,7 +158,21 @@
         return ids;
     }
 
+    function isFetchForm(form, submitter) {
+        const action = form.action || '';
+        if (/\/properties\/candidates\/(\d+)\/fetch$/.test(action)) return true;
+        if (form.id === 'batch-form') {
+            const formaction = submitter ? (submitter.getAttribute('formaction') || submitter.formAction || '') : '';
+            return formaction === '/properties/candidates/fetch' || formaction.endsWith('/properties/candidates/fetch');
+        }
+        return false;
+    }
+
     document.addEventListener('submit', function(e) {
+        // 非 fetch 表单（筛选/选中/拒绝）：不拦截，不禁用按钮
+        if (!isFetchForm(e.target, e.submitter)) return;
+
+        // 防抖：已提交则阻止再次提交
         if (submitting) {
             e.preventDefault();
             return;
@@ -170,10 +182,16 @@
         const ids = getFetchIds(e.target, e.submitter);
         ids.forEach(disableCandidate);
 
-        document.querySelectorAll('button[type="submit"]').forEach(function(btn) {
-            btn.disabled = true;
-            btn.classList.add('opacity-50', 'cursor-not-allowed');
-        });
+        // 禁用所有 fetch 相关按钮（单行抓取按钮 + 顶部批量抓取按钮），防止反复点击
+        document.querySelectorAll('.property-fetch-form button[type="submit"], button[formaction="/properties/candidates/fetch"]')
+            .forEach(function(btn) {
+                btn.disabled = true;
+                btn.classList.add('opacity-50', 'cursor-not-allowed');
+                if (btn.dataset.origText === undefined) {
+                    btn.dataset.origText = btn.textContent.trim();
+                    btn.textContent = '处理中...';
+                }
+            });
     }, true);
 })();
 </script>

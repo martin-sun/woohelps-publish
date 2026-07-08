@@ -967,7 +967,7 @@ class Database:
             )
 
     async def get_property_candidates_to_fetch(self, agent_id: int | None = None, candidate_ids: list[int] | None = None, city_slug: str | None = None, limit: int = 20) -> list[dict]:
-        conditions = ["human_status = 'selected'", "fetched_detail = FALSE"]
+        conditions = ["human_status = 'selected'"]
         args: list = []
         n = 0
         if agent_id:
@@ -976,6 +976,8 @@ class Database:
             n += 1; conditions.append(f"city_slug = ${n}"); args.append(city_slug)
         if candidate_ids:
             n += 1; conditions.append(f"id = ANY(${n}::int[])"); args.append(candidate_ids)
+        else:
+            conditions.append("fetched_detail = FALSE")
         where = f"WHERE {' AND '.join(conditions)}"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
