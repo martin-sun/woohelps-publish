@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS property_candidates (
     history_log TEXT NOT NULL DEFAULT '[]',     -- 变更历史
 
     -- 人工审核
-    human_status TEXT NOT NULL DEFAULT 'pending',  -- pending / selected / rejected
+    human_status TEXT NOT NULL DEFAULT 'pending',  -- pending / selected
     fetched_detail BOOLEAN NOT NULL DEFAULT FALSE, -- 是否已抓取详情页描述
     fetch_error TEXT,                           -- 详情页抓取失败原因
     property_id INTEGER,                        -- 关联到 properties.id（当选中时）

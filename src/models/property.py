@@ -63,7 +63,7 @@ class PropertyCandidate:
     history_log: list[dict] = field(default_factory=list)
 
     # 人工审核
-    human_status: str = "pending"               # pending / selected / rejected
+    human_status: str = "pending"               # pending / selected
     fetched_detail: bool = False
     fetch_error: str | None = None
     property_id: int | None = None

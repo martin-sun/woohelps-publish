@@ -856,17 +856,6 @@ async def property_candidates_select(request: Request):
     return RedirectResponse(url=referer, status_code=303)
 
 
-@app.post("/properties/candidates/reject")
-async def property_candidates_reject(request: Request):
-    db = _get_db()
-    form = await get_form(request)
-    candidate_ids = [int(x) for x in form.getlist("candidate_ids")]
-    if candidate_ids:
-        await db.update_property_candidate_status(candidate_ids, "rejected")
-    referer = request.headers.get("referer", "/properties/candidates")
-    return RedirectResponse(url=referer, status_code=303)
-
-
 @app.post("/properties/candidates/fetch")
 async def property_candidates_fetch(request: Request):
     db = _get_db()
