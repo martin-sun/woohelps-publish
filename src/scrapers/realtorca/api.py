@@ -1,6 +1,5 @@
 import asyncio
 import json
-import math
 from datetime import datetime, timedelta, timezone
 
 from loguru import logger
@@ -35,28 +34,20 @@ def datetime_to_dotnet_ticks(dt: datetime) -> int:
     return int((seconds * 10_000_000) + DOTNET_TICKS_EPOCH)
 
 
-def city_bounds(city_slug: str) -> dict[str, str]:
-    """根据城市中心点和 radius 计算地理边界框，返回 API 参数字典。
+def city_url(city_slug: str) -> str:
+    """根据城市 slug 拼接 realtor.ca 城市页面 URL
 
-    使用粗略估算：1° 纬度 ≈ 111 km，经度按纬度修正。
+    需要 CITIES 已通过 load_cities() 加载（含 province + eng_name）。
+    示例: "toronto" -> "https://www.realtor.ca/on/toronto/real-estate"
     """
     city = CITIES.get(city_slug)
     if not city:
         raise ValueError(f"Unknown city slug: {city_slug}")
-
-    lat = city["lat"]
-    lng = city["lng"]
-    radius_km = float(city.get("radius", "50km").replace("km", ""))
-
-    delta_lat = radius_km / 111.0
-    delta_lng = radius_km / (111.0 * math.cos(math.radians(lat)))
-
-    return {
-        "LatitudeMin": str(round(lat - delta_lat, 4)),
-        "LatitudeMax": str(round(lat + delta_lat, 4)),
-        "LongitudeMin": str(round(lng - delta_lng, 4)),
-        "LongitudeMax": str(round(lng + delta_lng, 4)),
-    }
+    prov = (city.get("province") or "").lower()
+    if not prov:
+        raise ValueError(f"City {city_slug} missing province")
+    slug_in_url = city["eng_name"].lower().replace(" ", "-").replace(".", "").replace("'", "")
+    return f"{REALTOR_BASE_URL}/{prov}/{slug_in_url}/real-estate"
 
 
 # 默认请求参数
@@ -134,19 +125,56 @@ async def call_realtor_api(
     raise last_exception or RuntimeError("Realtor API call exhausted all retries")
 
 
+async def fetch_city_geo_id(context, url: str) -> str:
+    """访问 realtor.ca 城市页面，提取 GeographicId
+
+    realtor.ca 城市页面是 ASP.NET SSR，GeographicId 注入在内联脚本的
+    SEOLandingPageCriteria 中（GeoIds=g30_xxx）。
+
+    只提取 geo_id，不取房源数据（避免与 API 分页的 RecordsPerPage 不一致导致漏数据）。
+    """
+    page = await context.new_page()
+    try:
+        logger.info(f"Fetching city geo_id: {url}")
+        resp = await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        if resp and resp.status != 200:
+            raise RuntimeError(f"City page HTTP {resp.status}: {url}")
+
+        # 提取 GeographicId（从内联脚本的 GeoIds= 参数）
+        geo_id = await page.evaluate("""
+            () => {
+                const scripts = Array.from(document.querySelectorAll('script'));
+                for (const s of scripts) {
+                    const m = (s.textContent || '').match(/GeoIds=([A-Za-z0-9_]+)/);
+                    if (m) return m[1];
+                }
+                return null;
+            }
+        """)
+        if not geo_id:
+            raise RuntimeError(f"No GeoIds found in {url}")
+
+        logger.info(f"City geo_id: {geo_id}")
+        return geo_id
+    finally:
+        await page.close()
+
+
 async def call_realtor_city_api(
-    city_slug: str,
+    geo_id: str,
     page: int = 1,
     max_retries: int = 3,
     context=None,
 ) -> dict:
-    """调用 realtor.ca AsyncPropertySearch_Post API 按城市地理边界框搜索房源"""
-    bounds = city_bounds(city_slug)
+    """调用 realtor.ca AsyncPropertySearch_Post API 按 GeographicId 搜索房源
+
+    使用从城市页面提取的 GeographicId 精确搜索，边界与 realtor.ca 官方一致。
+    """
     payload = {
         **DEFAULT_PAYLOAD,
         "CurrentPage": str(page),
         "RecordsPerPage": "50",       # 城市范围数据量大，提高每页条数减少翻页
-        **bounds,
+        "GeoIds": geo_id,
         "PropertyTypeGroupID": "1",   # Residential
         "TransactionTypeId": "2",     # For Sale
     }
@@ -170,7 +198,7 @@ async def call_realtor_city_api(
             if error.get("Id") != 200:
                 raise RuntimeError(f"Realtor City API error: {error.get('Description', 'Unknown')}")
 
-            logger.info(f"Realtor City API {city_slug} page {page}: {len(data.get('Results', []))} results, "
+            logger.info(f"Realtor City API geo_id={geo_id} page {page}: {len(data.get('Results', []))} results, "
                         f"total {data.get('Paging', {}).get('TotalRecords', 0)}")
             return data
 
@@ -239,21 +267,32 @@ async def fetch_all_listings(agent_id: str, delay: float = 2.5) -> list[dict]:
     return all_results
 
 
-async def fetch_city_listings(city_slug: str, days: int = 1, delay: float = 2.5) -> list[dict]:
-    """按城市地理边界框搜索最近 `days` 天内上架的房源，返回 Results 数组。
+async def fetch_city_listings(
+    city_slug: str,
+    days: int = 1,
+    delay: float = 2.5,
+    max_results: int = 0,
+) -> list[dict]:
+    """按城市搜索最近 `days` 天内上架的房源，返回 Results 数组。
 
-    使用 Sort=6-D（按上架日期降序），当某页所有房源都早于 cutoff 时停止翻页。
+    流程：
+    1. 从 CITIES 获取 province + eng_name，拼接 realtor.ca 城市 URL
+    2. 访问城市页面，提取 GeographicId（不取 SSR 数据，避免分页不一致漏数据）
+    3. 用 GeographicId 调 API 从 page=1 开始抓（50条/页），按 InsertedDateUTC 过滤
+    4. 遇到全旧房源页即停止翻页（Sort=6-D 保证按上架时间降序）
+
+    max_results: >0 时达到该数量即停止翻页（避免大城市爬太多页）
     """
     settings = get_settings()
     cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days)
     cutoff_ticks = datetime_to_dotnet_ticks(cutoff_dt)
 
+    url = city_url(city_slug)
     all_results: list[dict] = []
-    page = 1
 
     async with async_playwright() as p:
         browser = await launch_browser(p, settings)
-        context = await new_stealth_context(browser, settings)
+        context = await new_stealth_context(browser, settings, city_slug=city_slug)
 
         # 页面预热（与 fetch_all_listings 一致）
         warmup_page = await context.new_page()
@@ -271,27 +310,34 @@ async def fetch_city_listings(city_slug: str, days: int = 1, delay: float = 2.5)
             await warmup_page.close()
 
         try:
+            # 提取城市 GeographicId
+            geo_id = await fetch_city_geo_id(context, url)
+
+            # 统一用 API 从 page=1 开始抓（RecordsPerPage=50）
+            page = 1
             while True:
-                data = await call_realtor_city_api(city_slug, page=page, context=context)
+                data = await call_realtor_city_api(geo_id, page=page, context=context)
                 results = data.get("Results", [])
                 if not results:
                     break
 
-                # 过滤：只保留 InsertedDateUTC >= cutoff_ticks 的房源
                 filtered = [
                     r for r in results
                     if int(r.get("InsertedDateUTC", "0")) >= cutoff_ticks
                 ]
                 all_results.extend(filtered)
 
-                # 停止条件：如果这页已经没有符合 cutoff 的房源，后续页更老，直接停
                 if not filtered:
                     logger.info(f"City {city_slug} page {page}: all {len(results)} results older than {days} days, stopping")
                     break
 
+                if max_results > 0 and len(all_results) >= max_results:
+                    logger.info(f"City {city_slug}: reached max_results={max_results} at page {page}, stopping")
+                    all_results = all_results[:max_results]
+                    break
+
                 paging = data.get("Paging", {})
                 total_pages = paging.get("TotalPages", 1)
-
                 if page >= total_pages:
                     break
 

@@ -147,6 +147,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to fetch city mapping (publish will fail until fixed): {e}")
 
+    # 加载城市列表到 CITIES（爬虫拼接 realtor.ca URL 需要 province + eng_name）
+    # 失败或结果为空时 fail fast —— 不以空城市表继续运行，否则 /cities、
+    # /properties/city-scrape 全部失效但用户无感知
+    from src.config.city_loader import load_cities
+    try:
+        await load_cities(settings.WOOHELPS_API_URL, settings.WOOHELPS_LOGIN_SESSION)
+    except Exception as e:
+        logger.error(f"Failed to load cities from v2 API: {e}")
+        raise RuntimeError(f"City list loading failed, aborting startup: {e}") from e
+    if not CITIES:
+        logger.error("City list loaded empty from v2 API, aborting startup")
+        raise RuntimeError("City list is empty after loading from v2 API")
+
     # Reset stale running tasks
     tasks = await _db.list_recent_scrape_tasks()
     for t in tasks:

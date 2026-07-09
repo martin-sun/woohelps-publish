@@ -32,8 +32,8 @@
             {% endif %}
         </div>
         <div class="space-y-1 text-xs text-gray-500 mb-4">
-            <div>坐标: {{ info.lat }}, {{ info.lng }}</div>
-            <div>搜索半径: {{ info.radius }}</div>
+            <div>省份: {{ info.province }}</div>
+            <div>英文名: {{ info.eng_name }}</div>
             <div>候选房源: {{ candidate_counts.get(slug, 0) }}</div>
         </div>
         <form method="post" action="/properties/city-scrape" class="flex gap-2">
