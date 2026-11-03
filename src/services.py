@@ -333,7 +333,7 @@ async def run_once(city: str | None = None):
     """单次运行发现流程（列表页 + AI 过滤 → 存入候选，不自动抓详情）"""
     settings = get_settings()
 
-    async with Database(settings.DATABASE_URL) as db:
+    async with Database(settings.DATABASE_URL, settings.DB_SCHEMA) as db:
         ai_engine = AIEngine.from_settings(settings)
 
         cities = [city] if city else list(CITIES.keys())

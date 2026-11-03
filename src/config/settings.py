@@ -23,6 +23,8 @@ class Settings(BaseSettings):
 
     # 数据库
     DATABASE_URL: str = "postgresql://localhost/activities"
+    # 数据库 schema（共用一个 Supabase 项目时给本项目用独立 schema，如 woohelps_publish）
+    DB_SCHEMA: str = "public"
 
     # 浏览器（空值=本地启动 Chromium，非空=连接远程 CDP）
     BROWSER_WS_ENDPOINT: str = ""

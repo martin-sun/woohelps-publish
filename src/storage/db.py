@@ -1,4 +1,5 @@
 import json
+import re
 import ssl
 from datetime import datetime, timezone
 
@@ -10,12 +11,15 @@ from src.models.property import Agent, PropertyCandidate, Property
 
 
 class Database:
-    def __init__(self, database_url: str):
+    def __init__(self, database_url: str, db_schema: str = "public"):
         self.database_url = database_url
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", db_schema):
+            raise ValueError(f"Invalid schema name: {db_schema!r}")
+        self.db_schema = db_schema
         self._pool: asyncpg.Pool | None = None
 
-    @staticmethod
-    async def _check_connection(conn):
+    async def _check_connection(self, conn):
+        await conn.execute(f'SET search_path TO "{self.db_schema}", public')
         await conn.execute("SELECT 1")
 
     async def init(self):
@@ -26,6 +30,7 @@ class Database:
             self.database_url, min_size=2, max_size=10,
             statement_cache_size=0, ssl=ssl_ctx,
             command_timeout=30, setup=self._check_connection,
+            server_settings={"search_path": f"{self.db_schema}, public"},
         )
 
     async def close(self):
