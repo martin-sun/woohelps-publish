@@ -140,7 +140,7 @@ async def main():
                     headers={"LOGIN-SESSION": settings.WOOHELPS_LOGIN_SESSION},
                 )
                 info = r.json()
-                ad = info.get("data") or {}
+                ad = info.get("data") or info
                 out["verify"] = {"errcode": info.get("errcode"), "name": ad.get("name"), "start_time": ad.get("start_time"), "address": ad.get("address")}
             except Exception as e:
                 out["verify"] = {"error": type(e).__name__}
