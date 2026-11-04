@@ -226,12 +226,13 @@ class WoohelpsPublisher:
             logger.error(f"No images uploaded for {activity.source_id}, aborting publish")
             return {"errcode": -1, "errmsg": "图片上传失败"}
 
-        # 2. 构建 miniapp 格式 description
+        # 2. 构建 miniapp 格式 description（按段拆成多个文本块，读者端段落分明）
+        paragraphs = [p.strip() for p in activity.content_zh.split("\n\n") if p.strip()]
+        if not paragraphs:
+            paragraphs = [activity.content_zh]
         description = json.dumps([
-            {
-                "type": 1,
-                "text": json.dumps({"txt": activity.content_zh, "path": ""}, ensure_ascii=False),
-            }
+            {"type": 1, "text": json.dumps({"txt": p, "path": ""}, ensure_ascii=False)}
+            for p in paragraphs
         ], ensure_ascii=False)
 
         # 3. 构建 payload
