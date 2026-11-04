@@ -101,6 +101,7 @@ description: 按用户喜好为海外新生活（Woohelps）挑选每日加拿�
 
 - 排版只用平台富文本的白名单词汇，与真人编辑器产出的格式一致：正文每段套 font-size 18px；分节标题用 h2 加 color rgb(28, 72, 127) 加粗 18px，二级标题用 h3 加粗；重点数字与名词用 strong 或 b 加粗；节与节之间用 hr 分隔；文末来源行用 12px 灰色（#888888）小字。
 
+- 正文不用背景色（background-color）做色块：用户看过带底色的样张后明确反馈有背景反而不好看。突出重点只靠加粗、字号、深蓝标题、hr 分隔与必要的边框，底色一律不用。
 - 内联样式只用展示端 sanitize 白名单放行的属性：color、background-color、font-size、font-weight、font-style、line-height、text-align、text-decoration、white-space。border、padding、margin、border-radius、max-width 等不在白名单、展示时会被剥掉，不要用。依据代码：主站 website/app/globals.css 的 .sanitized-html 规则与 website/app/[city]/[tag]/[postId]/details/_lib/sanitize.ts 白名单；编辑器字号映射见 website-usercenter/components/WangEditorClient.tsx（font size 4 对应 18px）。
 
 ## 发布口径
@@ -141,6 +142,7 @@ description: 按用户喜好为海外新生活（Woohelps）挑选每日加拿�
   - 2026-11-03 用户改定发布方式：以后不要直接发布，先给候选清单由用户选择哪些要发布，选中的才发；原试点期助理直接发布、日报附链接抽查的安排即日作废，交付规则与每日任务已同步改掉。
   - 2026-11-03 用户指出已发布的文章都没有图，要求配封面图；据此在发布口径里新增封面图必填规则（依据：用户原话“发布的时候我发现都没有图，应该需要配封面图”）。
   - 2026-11-03 晚讨论定稿成稿标准：用户指出助理稿件翻译太简单、排版平。对比真人三篇样本并查主站代码（.sanitized-html 规则、sanitize 白名单、编辑器字号映射）后新增「成稿标准（编译与排版）」一节；封面图补第二级规则，无原文图时生成插画风封面图。用户同时澄清从未要求「对华人影响」固定专节，该设想已撤下、不入标准。
+  - 2026-11-03 用户看过近似版样张（测试文 14607）后反馈：去掉所有背景色（底色），有背景反而不好看；已据此在成稿标准补「正文不用背景色」一条，样张同步更新为无底色版（依据：用户原话“建议把所有背景色去掉”“我说的背景色就是底色”）。
 
 ## Available connectors
 
