@@ -23,7 +23,7 @@ from src.publisher.woohelps import WoohelpsPublisher
 
 def build_description(content):
     paras = []
-    for p in content.split("\n\n"):
+    for p in content.replace("\r\n", "\n").split("\n"):
         p = p.strip()
         if not p or p.startswith("来源"):
             continue
