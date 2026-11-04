@@ -146,6 +146,11 @@ class WoohelpsPublisher:
 
     async def _upload_bytes(self, image_bytes: bytes, raw_name: str) -> str | None:
         try:
+            content_type = "image/jpeg"
+            if raw_name.lower().endswith(".png"):
+                content_type = "image/png"
+            elif raw_name.lower().endswith(".webp"):
+                content_type = "image/webp"
             headers = {"LOGIN-SESSION": self.login_session}
             presign_resp = await self.client.get(
                 f"{self.base_url}/api/applet/aws/generate-presigned-url",
