@@ -70,7 +70,7 @@ def check(item: dict, check_links: bool) -> dict:
                 if prop and prop not in ALLOWED_STYLE_PROPS:
                     bad_props.add(prop)
     if bad_props:
-        errors.append(f"白名单外样式属性：{, .join(sorted(bad_props))}")
+        errors.append(f"白名单外样式属性：{', '.join(sorted(bad_props))}")
 
     # 分节编号连续
     heads = [plain(m) for m in re.findall(r"<h2>(.*?)</h2>", html, re.S)]
