@@ -130,7 +130,22 @@ class WoohelpsPublisher:
             elif raw_name.lower().endswith(".webp"):
                 content_type = "image/webp"
 
-            # 3. 获取预签名 URL
+            return await self._upload_bytes(image_bytes, raw_name)
+        except Exception as e:
+            logger.warning(f"Failed to upload image {image_url}: {e}")
+            return None
+
+    async def upload_image_bytes(self, image_bytes: bytes, raw_name: str) -> str | None:
+        try:
+            if len(image_bytes) < 100:
+                return None
+            return await self._upload_bytes(image_bytes, raw_name)
+        except Exception as e:
+            logger.warning(f"Failed to upload image bytes {raw_name}: {e}")
+            return None
+
+    async def _upload_bytes(self, image_bytes: bytes, raw_name: str) -> str | None:
+        try:
             headers = {"LOGIN-SESSION": self.login_session}
             presign_resp = await self.client.get(
                 f"{self.base_url}/api/applet/aws/generate-presigned-url",
@@ -174,7 +189,7 @@ class WoohelpsPublisher:
             return result_url
 
         except Exception as e:
-            logger.warning(f"Failed to upload image {image_url}: {e}")
+            logger.warning(f"Failed to upload image bytes {raw_name}: {e}")
             return None
 
     async def _upload_all_images(self, image_urls: list[str]) -> list[str]:

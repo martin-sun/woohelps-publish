@@ -85,7 +85,7 @@ def check_static(d, published):
 
 
 async def check_links(d):
-    problems = []
+    problems, warnings = [], []
     urls = [d.get("source_url")] + list(d.get("image_urls") or [])
     async with httpx.AsyncClient(follow_redirects=True, timeout=20, headers={"User-Agent": "Mozilla/5.0"}) as c:
         for u in urls:
@@ -93,11 +93,13 @@ async def check_links(d):
                 continue
             try:
                 r = await c.get(u)
-                if r.status_code != 200:
+                if r.status_code == 403 and "todocanada.ca" in u:
+                    warnings.append("反爬站403（成稿时已用浏览器核实）: %s" % u)
+                elif r.status_code != 200:
                     problems.append("链接非200: %s -> %s" % (u, r.status_code))
             except Exception as e:
                 problems.append("链接打不开: %s (%s)" % (u, type(e).__name__))
-    return problems
+    return problems, warnings
 
 
 async def main():
@@ -112,7 +114,9 @@ async def main():
         d = json.loads(Path(f).read_text(encoding="utf-8"))
         problems, warnings = check_static(d, published)
         if not args.no_links:
-            problems += await check_links(d)
+            lp, lw = await check_links(d)
+            problems += lp
+            warnings += lw
         if problems:
             bad += 1
         print(json.dumps({"file": Path(f).name, "status": "PASS" if not problems else "FAIL", "problems": problems, "warnings": warnings}, ensure_ascii=False))

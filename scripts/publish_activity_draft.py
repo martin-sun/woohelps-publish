@@ -62,6 +62,37 @@ def build_activity(d):
     )
 
 
+async def resolve_images(pub, d):
+    from pathlib import PurePosixPath
+    resolved, need_browser = [], []
+    for u in d.get("image_urls") or []:
+        up = await pub.upload_image(u)
+        if up:
+            resolved.append(up)
+        else:
+            need_browser.append(u)
+    if need_browser:
+        from playwright.async_api import async_playwright
+        from src.scrapers.browser import launch_browser, new_stealth_context
+        settings = get_settings()
+        async with async_playwright() as p:
+            browser = await launch_browser(p, settings)
+            ctx = await new_stealth_context(browser, settings, city_slug=d.get("city_slug", "saskatoon"))
+            page = await ctx.new_page()
+            for u in need_browser:
+                resp = await page.goto(u)
+                if resp and resp.ok:
+                    body = await resp.body()
+                    name = PurePosixPath(u).name.split("?")[0] or "image.jpg"
+                    up = await pub.upload_image_bytes(body, name)
+                    if up:
+                        resolved.append(up)
+                await asyncio.sleep(1)
+            await ctx.close()
+            await browser.close()
+    return resolved
+
+
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
@@ -86,6 +117,12 @@ async def main():
         if not city_id:
             print(json.dumps({"ok": False, "error": "no city_id for " + act.city_slug}, ensure_ascii=False))
             return 1
+        imgs = await resolve_images(pub, d)
+        if not imgs:
+            print(json.dumps({"ok": False, "error": "all image uploads failed"}, ensure_ascii=False))
+            return 1
+        act.image_url = imgs[0]
+        act.image_urls = imgs
         result = await pub.publish_activity(act, city_id)
         out = {"publish_result": result}
         aid = None
