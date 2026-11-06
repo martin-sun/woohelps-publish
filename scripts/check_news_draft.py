@@ -4,7 +4,7 @@
     uv run python scripts/check_news_draft.py --input item.json [--check-links]
 
 检查项（见 .claude/skills/woohelps_news_picking/SKILL.md「发布前检查」）：
-空标签、图片与封面重复、封面缺失、background-color 红线、白名单外样式属性、
+空标签、标题下首图与图片重复、封面缺失、background-color 红线、白名单外样式属性、
 分节编号连续；--check-links 时再逐个验活来源与图片链接。
 输出一行 JSON：{"ok": bool, "errors": [...], "warnings": [...]}；有 error 时退出码 1。
 """
@@ -45,13 +45,17 @@ def check(item: dict, check_links: bool) -> dict:
             if not plain(frag) and "<img" not in frag:
                 errors.append(f"空 <{tag}> 标签（只有换行或空白）")
 
-    # 图片重复与封面
+    # 标题下首图与图片重复
     srcs = re.findall(r"<img[^>]+src=\"([^\"]+)\"", html)
     cover = item.get("cover_image_url") or ""
     if not cover:
         errors.append("缺少封面图 cover_image_url")
-    if cover and cover in srcs:
-        errors.append("封面图与正文图片重复（同一张图出现两次）")
+    if cover and not srcs:
+        errors.append("正文缺少标题下配图（正文第一张图应为封面图）")
+    if cover and srcs and srcs[0] != cover:
+        errors.append("正文首图应为封面图（标题下方放封面图）")
+    if cover and srcs.count(cover) > 1:
+        errors.append("封面图在正文出现多次（只许在标题下方出现一次）")
     seen: set[str] = set()
     for src in srcs:
         if src in seen:
