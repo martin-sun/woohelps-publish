@@ -50,16 +50,16 @@ SWEEP_PAGES = [
     ("CBC News", "政治", "https://www.cbc.ca/news/politics"),
     ("CBC News", "加拿大", "https://www.cbc.ca/news/canada"),
     ("CBC News", "商业", "https://www.cbc.ca/news/business"),
-    ("CBC News", "消费者", "https://www.cbc.ca/news/consumer"),
+    ("CBC News", "Go Public消费者维权", "https://www.cbc.ca/news/gopublic"),  # 2026-11-05 改：/news/consumer 已 404，消费者内容现归 Go Public 栏目（实测 200、31 条）
     ("CTV News", "首页", "https://www.ctvnews.ca/"),
     ("CTV News", "全国", "https://www.ctvnews.ca/canada"),
-    ("CTV News", "消费者维权", "https://www.ctvnews.ca/consumer"),
+    ("CTV News", "消费者维权（多伦多站）", "https://www.ctvnews.ca/toronto/consumer-alert"),  # 2026-11-05 改：全国站已无消费者版块（/consumer 404），Pat Foran 的 Consumer Alert 在多伦多地方站（实测 200、16 条）
     ("Financial Post", "首页", "https://financialpost.com/"),
     ("Financial Post", "新闻", "https://financialpost.com/news"),
     ("Financial Post", "个人理财", "https://financialpost.com/personal-finance"),
     ("Financial Post", "Posthaste", "https://financialpost.com/news/posthaste"),
     ("Daily Hive Canada", "加拿大首页", "https://dailyhive.com/canada"),
-    ("Daily Hive Canada", "加拿大新闻列表", "https://dailyhive.com/canada/news"),
+    ("Daily Hive Canada", "加拿大新闻列表", "https://dailyhive.com/canada/category/news"),  # 2026-11-05 改：/canada/news 已 404，站内 NEWS 导航现指向 category/news（实测 200、28 条）
 ]
 
 EXTRACT_JS = r"""
