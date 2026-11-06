@@ -66,6 +66,11 @@ async def resolve_images(pub, d):
     from pathlib import PurePosixPath
     resolved, need_browser = [], []
     for u in d.get("image_urls") or []:
+        if not u.startswith(("http://", "https://")) and Path(u).is_file():
+            up = await pub.upload_image_bytes(Path(u).read_bytes(), Path(u).name)
+            if up:
+                resolved.append(up)
+            continue
         up = await pub.upload_image(u)
         if up:
             resolved.append(up)
