@@ -117,7 +117,7 @@ description: 按用户喜好为海外新生活（Woohelps）挑选每日加拿�
 
 - 成稿前必须打开来源原文读全文，不许只靠搜索结果摘要拼稿；核不到原文全文的选题宁可不选。 原文页普通抓取打不开时，用项目 scripts/browser_fetch.py article 走 stealth 浏览器读全文并取主图（正文存 article.txt、标题与主图等元信息存 meta.json），作为标准兜底，不再只依赖外部浏览器任务。
 
-- 排版只用平台富文本的白名单词汇，与真人编辑器产出的格式一致：正文每段套 font-size 18px；分节标题用 h2 加 color rgb(28, 72, 127) 加粗 18px，二级标题用 h3 加粗；重点数字与名词用 strong 或 b 加粗；不用分割线（hr），节与节之间靠分节标题自然区隔；文末来源行用 12px 灰色（#888888）小字。
+- 排版只用平台富文本的白名单词汇，与真人编辑器产出的格式一致：正文每段套 font-size 18px；分节标题用 h2 加 color rgb(28, 72, 127) 加粗 18px，二级标题用 h3 加粗；重点数字与名词用 strong 或 b 加粗；不用分割线（hr），节与节之间靠分节标题自然区隔；文末来源行用 12px 灰色（#888888）小字。来源行除写明来源名（及必要的出处注）外，必须附上原网页链接（2026-11-06 用户定）：行末加「原文链接」四字并做成指向稿件 source_url 的超链接（a 标签 href），让读者能点开原文；链接地址必须是该稿底本原文页的完整 URL，不许用搜索结果页或媒体首页充数。
 
 - 正文不用背景色（background-color）做色块：用户看过带底色的样张后明确反馈有背景反而不好看。突出重点只靠加粗、字号、深蓝标题与必要的边框，底色一律不用。
 - 内联样式只用展示端 sanitize 白名单放行的属性：color、background-color、font-size、font-weight、font-style、line-height、text-align、text-decoration、white-space。border、padding、margin、border-radius、max-width 等不在白名单、展示时会被剥掉，不要用。依据代码：主站 website/app/globals.css 的 .sanitized-html 规则与 website/app/[city]/[tag]/[postId]/details/_lib/sanitize.ts 白名单；编辑器字号映射见 website-usercenter/components/WangEditorClient.tsx（font size 4 对应 18px）。
