@@ -28,8 +28,8 @@ from src.models.activity import ProcessedActivity
 from src.publisher.woohelps import WoohelpsPublisher
 
 FMT = "%Y-%m-%d %H:%M"
-CITY_ZH = {"saskatoon": "萨斯卡通", "toronto": "多伦多", "vancouver": "温哥华", "calgary": "卡尔加里"}
-CITY_FALLBACK = {"saskatoon": 6}
+CITY_ZH = {"saskatoon": "萨斯卡通", "toronto": "多伦多", "vancouver": "溫哥華", "calgary": "卡尔加里", "regina": "里贾纳", "edmonton": "埃德蒙顿", "montreal": "蒙特利尔", "ottawa": "渥太華", "winnipeg": "温尼伯", "halifax": "哈利法克斯", "london": "伦敦", "mississauga": "密西沙加", "markham": "萬錦市", "richmond-hill": "列治文山", "vaughan": "旺市", "oakville": "奥克维尔", "richmond": "列治文", "burnaby": "本那比", "surrey": "素里", "coquitlam": "高贵林", "brossard": "宝乐沙"}
+CITY_FALLBACK = {"saskatoon": 6, "vancouver": 4, "montreal": 5, "edmonton": 7, "calgary": 9, "regina": 10, "toronto": 18, "ottawa": 19, "surrey": 124, "richmond": 140, "richmond-hill": 142, "mississauga": 145, "winnipeg": 174, "burnaby": 202, "vaughan": 244, "london": 250, "halifax": 275, "coquitlam": 413, "brossard": 457, "oakville": 1047, "markham": 120}
 
 
 def build_activity(d):
