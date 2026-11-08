@@ -13,7 +13,7 @@ JSON 字段：
     source_url       原文链接，文末自动附来源行
     cover_image_url  封面图外链，可选，发布前自动转存到平台存储
     city_id          城市 id，可选，0 或不填为全国可见
-    country_id       国家 id，可选，默认 1（加拿大）
+    country_id       国家 id，新闻稿一律填 0（不限国家，任何国家城市可见）；不填默认 3（加拿大）
 
 输出：一行 JSON。真实发布时含 article_id 与核验状态。--dry-run 只打印将提交的 payload。
 """

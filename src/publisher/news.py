@@ -8,8 +8,9 @@ POST /api/applet/article/release，分类用文章标签 id 关联。
 移民留学 66、房产资讯 816、理财金融 818、教育文化 819、生活百科 820、
 商业就业 821、就业信息 3757。平台没有单独的「新闻」分类，新闻按题材进上述分类。
 
-可见性约定：city_id=0 且 country_id=加拿大时文章在全国范围可见；
-带 city_id 时只在该城市与其所属国家范围可见（后端 get_articles 的口径）。
+可见性约定：带 city_id 时只在该城市与其所属国家范围可见（后端 get_articles 的口径）。
+新闻线自 2026-11-08 起一律不限国家城市：稿件显式写 country_id=0、city_id=0，
+任何国家、任何城市的用户都能看到（用户定）。
 发布后同步文本审核一般即时通过（moderation_status 默认 approved），
 带图片时平台还有异步图片审核，核验以 info/get 返回的状态为准。
 """
@@ -89,7 +90,7 @@ async def publish_news(
         str(category_id),
     )
     city_id = int(item.get("city_id") or 0)
-    country_id = int(item.get("country_id") or CANADA_COUNTRY_ID)
+    country_id = int(item["country_id"]) if item.get("country_id") is not None else CANADA_COUNTRY_ID
 
     cover_url = ""
     cover_source = item.get("cover_image_url")
