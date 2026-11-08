@@ -91,6 +91,14 @@ async def check_links(d):
         for u in urls:
             if not u:
                 continue
+            if not u.startswith("http"):
+                # 小八本地图片路径（生成图/已取回的原图字节）：存在且 >=100 字节即通过
+                lp = Path(u)
+                if not lp.is_file():
+                    problems.append("本地图片不存在: %s" % u)
+                elif lp.stat().st_size < 100:
+                    problems.append("本地图片过小: %s" % u)
+                continue
             try:
                 r = await c.get(u)
                 if r.status_code == 403 and "todocanada.ca" in u:
