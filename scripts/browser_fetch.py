@@ -51,6 +51,8 @@ SWEEP_PAGES = [
     ("CBC News", "加拿大", "https://www.cbc.ca/news/canada"),
     ("CBC News", "商业", "https://www.cbc.ca/news/business"),
     ("CBC News", "Go Public消费者维权", "https://www.cbc.ca/news/gopublic"),  # 2026-11-05 改：/news/consumer 已 404，消费者内容现归 Go Public 栏目（实测 200、31 条）
+    ("CBC News", "卑诗地区", "https://www.cbc.ca/news/canada/british-columbia"),  # 2026-11-08 加：温哥华欠税拍卖稿（地区稿、读者相关度高）当天漏检——地区版块原不在清单里、全国页未挂就扫不到，故补卑诗与多伦多两个华人聚居地区版块（实测 200、39 条；该欠税拍卖稿就在此页上）
+    ("CBC News", "多伦多地区", "https://www.cbc.ca/news/canada/toronto"),  # 2026-11-08 加：同上（实测 200、29 条）
     ("CTV News", "首页", "https://www.ctvnews.ca/"),
     ("CTV News", "全国", "https://www.ctvnews.ca/canada"),
     ("CTV News", "消费者维权（多伦多站）", "https://www.ctvnews.ca/toronto/consumer-alert"),  # 2026-11-05 改：全国站已无消费者版块（/consumer 404），Pat Foran 的 Consumer Alert 在多伦多地方站（实测 200、16 条）
