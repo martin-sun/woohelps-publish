@@ -62,10 +62,10 @@ def check(item: dict, check_links: bool) -> dict:
             errors.append(f"正文内图片重复：{src}")
         seen.add(src)
 
-    # 列表字号：li 必须带 18px，否则按平台默认字号渲染、比正文偏小
+    # 列表字号：li 必须带 16px + 行高 1.7（比正文小一号，手机上不挤）
     for tag in re.findall(r"<li[^>]*>", html):
-        if "font-size" not in tag:
-            errors.append("列表条目 <li> 缺少 font-size: 18px（会比正文偏小）")
+        if "font-size: 16px" not in tag or "line-height: 1.7" not in tag:
+            errors.append("列表条目 <li> 样式不合规（须 font-size: 16px 与 line-height: 1.7）")
             break
 
     # 样式红线
