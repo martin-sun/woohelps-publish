@@ -62,6 +62,12 @@ def check(item: dict, check_links: bool) -> dict:
             errors.append(f"正文内图片重复：{src}")
         seen.add(src)
 
+    # 列表字号：li 必须带 18px，否则按平台默认字号渲染、比正文偏小
+    for tag in re.findall(r"<li[^>]*>", html):
+        if "font-size" not in tag:
+            errors.append("列表条目 <li> 缺少 font-size: 18px（会比正文偏小）")
+            break
+
     # 样式红线
     bg = len(re.findall(r"background-color\s*:", html))
     if bg:
