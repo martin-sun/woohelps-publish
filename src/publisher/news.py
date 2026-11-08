@@ -11,6 +11,8 @@ POST /api/applet/article/release，分类用文章标签 id 关联。
 可见性约定：带 city_id 时只在该城市与其所属国家范围可见（后端 get_articles 的口径）。
 新闻线自 2026-11-08 起一律不限国家城市：稿件显式写 country_id=0、city_id=0，
 任何国家、任何城市的用户都能看到（用户定）。
+标签约定：每篇同时带 type-4 分类标签与小程序栏目 tab 标签（见 TAB_TAGS），
+栏目页靠 tab 标签过滤；稿件可用 extra_tags 追加（如休闲 2501）。
 发布后同步文本审核一般即时通过（moderation_status 默认 approved），
 带图片时平台还有异步图片审核，核验以 info/get 返回的状态为准。
 """
@@ -33,6 +35,19 @@ CATEGORY_IDS: dict[str, int] = {
     "生活百科": 820,
     "商业就业": 821,
     "就业信息": 3757,
+}
+
+# 小程序资讯栏目 tab 标签（2026-11-08 扫全站近 30 天文章实际在用标签核实）：
+# 栏目页（全部/房产/财税/移民/…）按这套标签过滤，只带分类标签的文章只出现在「全部」。
+# 教育/生意/招聘的 tab 标签 id 尚未核实，对应分类先暂归最接近的栏目，核实后改这里。
+TAB_TAGS: dict[str, tuple[int, str]] = {
+    "移民留学": (2459, "移民"),
+    "房产资讯": (2455, "房产"),
+    "理财金融": (2463, "财税"),
+    "生活百科": (2461, "生活"),
+    "教育文化": (2461, "生活"),  # 教育 tab id 未核实，暂归生活
+    "商业就业": (2463, "财税"),  # 生意 tab id 未核实，宏观经济暂归财税
+    "就业信息": (2461, "生活"),  # 招聘 tab id 未核实，暂归生活
 }
 
 
@@ -74,6 +89,22 @@ def resolve_category_id(item: dict) -> int:
     raise ValueError(f"未知分类：{raw}，可用分类：{', '.join(CATEGORY_IDS)}")
 
 
+def _build_tags(item: dict, category_id: int, category_name: str) -> list[dict]:
+    """组装双标签：type-4 分类标签 + 小程序栏目 tab 标签 + 稿件 extra_tags，去重。"""
+    tags = [{"id": category_id, "name": category_name}]
+    tab = TAB_TAGS.get(category_name)
+    if tab:
+        tags.append({"id": tab[0], "name": tab[1]})
+    for extra in item.get("extra_tags") or []:
+        tags.append({"id": int(extra["id"]), "name": str(extra["name"])})
+    seen: set[int] = set()
+    out: list[dict] = []
+    for t in tags:
+        if t["id"] not in seen:
+            seen.add(t["id"])
+            out.append(t)
+    return out
+
 async def publish_news(
     publisher: WoohelpsPublisher,
     item: dict,
@@ -110,7 +141,7 @@ async def publish_news(
         "img": cover_url,
         "imgs": json.dumps([cover_url] if cover_url else [], ensure_ascii=False),
         "tags": json.dumps(
-            [{"id": category_id, "name": category_name}], ensure_ascii=False
+            _build_tags(item, category_id, category_name), ensure_ascii=False
         ),
         "country_id": country_id,
         "city_id": city_id,
